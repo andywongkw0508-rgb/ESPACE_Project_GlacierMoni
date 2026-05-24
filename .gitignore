@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# IDE and local tooling
+.idea/
+tools/
+
+# Large or generated project data
+data/
+output/
+tmp/
+docx_render_check/
+pdf_pages/
+
+# Generated interface outputs
+project coding/outputs/
+project coding/assets/
+project coding/logs/
+project coding/notebooks/.ipynb_checkpoints/
+
+# Office/report artifacts kept outside source control by default
+*.docx
+*.pdf
