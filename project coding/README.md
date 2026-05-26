@@ -47,6 +47,7 @@ Current interface features:
 - Run GDAL preprocessing for basket scenes, clipping them to the configured AOI and saving rasters under `outputs/preprocessed/`.
 - Choose Sentinel-2 preprocessing resolution: `10 m`, `20 m`, or `30 m`; Landsat remains fixed at `30 m`.
 - Manage preprocessing run folders from the app, including deleting one or more old runs.
+- Calculate NDSI and NDWI rasters from selected preprocessing run folders.
 
 ## Code Layout
 
@@ -57,6 +58,7 @@ glacier_app/
   bands.py              band availability checks and GeoTIFF preview rendering
   config.py             project paths and band definitions
   data.py               manifest loading and row normalization
+  indexes.py            NDSI and NDWI calculation from preprocessed bands
   preprocessing.py      GDAL clipping/reprojection for basket scenes
   preview.py            zoom, fit, and pan behavior for the preview canvas
 ```
@@ -76,3 +78,23 @@ Current first-pass settings:
 - Run manifest: `preprocessed_manifest.csv`
 - Run log: `preprocess.log`
 - One or more old run folders can be selected and deleted from the `Preprocessing Runs` manager in the app.
+
+## Index Calculation
+
+The `Calculate Indexes` button processes selected preprocessing run folders.
+
+Current indexes:
+
+- NDSI: `(Green - SWIR) / (Green + SWIR)`
+- NDWI: `(Green - NIR) / (Green + NIR)`
+
+Outputs are written under each run folder:
+
+```text
+outputs/preprocessed/run_YYYYMMDD_HHMMSS_s2XXm/indexes/
+```
+
+Each run also receives:
+
+- Index manifest: `index_manifest.csv`
+- Index log: `index_calculation.log`

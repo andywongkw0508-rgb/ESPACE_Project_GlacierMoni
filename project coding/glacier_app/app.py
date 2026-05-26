@@ -16,6 +16,7 @@ from .config import (
     SENTINEL_PREPROCESS_RESOLUTIONS,
 )
 from .data import load_rows
+from .indexes import IndexResult, calculate_run_indexes
 from .preprocessing import PreprocessResult, delete_preprocess_run, list_preprocess_runs, preprocess_rows
 from .preview import PreviewController
 
@@ -154,6 +155,8 @@ class ImageryApp(tk.Tk):
         ttk.Button(buttons, text="Delete Selected", command=self.delete_selected_preprocess_run).grid(
             row=0, column=1, sticky="ew"
         )
+        self.index_button = ttk.Button(buttons, text="Calculate Indexes", command=self.calculate_selected_indexes)
+        self.index_button.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
         self.refresh_preprocess_runs()
 
     def build_table(self, parent: ttk.Frame) -> None:
@@ -687,6 +690,55 @@ class ImageryApp(tk.Tk):
             self.status_var.set(f"Deleted preprocessing run: {deleted_runs[0].name}")
         else:
             self.status_var.set(f"Deleted {len(deleted_runs)} preprocessing runs.")
+
+    def calculate_selected_indexes(self) -> None:
+        run_paths = self.selected_preprocess_run_paths()
+        if not run_paths:
+            self.status_var.set("Select one or more preprocessing runs before calculating indexes.")
+            return
+        self.index_button.configure(state="disabled")
+        self.status_var.set(f"Calculating NDSI and NDWI for {len(run_paths)} preprocessing run(s).")
+        worker = threading.Thread(target=self.index_worker, args=(run_paths,), daemon=True)
+        worker.start()
+
+    def index_worker(self, run_paths: list[Path]) -> None:
+        results = []
+        failures = []
+        for run_path in run_paths:
+            try:
+                result = calculate_run_indexes(
+                    run_path,
+                    progress=lambda message: self.after(0, self.status_var.set, message),
+                )
+            except Exception as exc:
+                failures.append((run_path, exc))
+            else:
+                results.append(result)
+        self.after(0, self.index_finished, results, failures)
+
+    def index_finished(self, results: list[IndexResult], failures: list[tuple[Path, Exception]]) -> None:
+        self.index_button.configure(state="normal")
+        self.refresh_preprocess_runs()
+        index_count = sum(result.index_count for result in results)
+        scene_count = sum(result.scene_count for result in results)
+        if failures:
+            details = "\n".join(f"{path.name}: {exc}" for path, exc in failures)
+            self.status_var.set(f"Created {index_count} index raster(s); {len(failures)} run(s) failed.")
+            messagebox.showerror("Index calculation failed", details)
+            return
+        if not results:
+            self.status_var.set("No indexes were calculated.")
+            return
+        manifest_lines = "\n".join(str(result.output_manifest) for result in results[:3])
+        if len(results) > 3:
+            manifest_lines = f"{manifest_lines}\n...and {len(results) - 3} more"
+        self.status_var.set(f"Created {index_count} index raster(s) from {scene_count} scene(s).")
+        messagebox.showinfo(
+            "Index calculation complete",
+            f"Index rasters written: {index_count}\n"
+            f"Scenes scanned: {scene_count}\n\n"
+            f"Manifest file(s):\n{manifest_lines}",
+        )
 
     def copy_selected_scene_id(self) -> None:
         row = self.selected_row()
