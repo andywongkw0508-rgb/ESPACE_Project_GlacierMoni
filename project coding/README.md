@@ -44,3 +44,15 @@ Current interface features:
 - Check selected-scene band availability against downloaded GeoTIFF files and manifest URLs.
 - Select a band row to switch the preview window to that band image.
 - Export basket scenes to `outputs/selected_scenes.csv`.
+
+## Code Layout
+
+```text
+app.py                  thin launcher
+glacier_app/
+  app.py                Tkinter application shell and UI callbacks
+  bands.py              band availability checks and GeoTIFF preview rendering
+  config.py             project paths and band definitions
+  data.py               manifest loading and row normalization
+  preview.py            zoom, fit, and pan behavior for the preview canvas
+```
