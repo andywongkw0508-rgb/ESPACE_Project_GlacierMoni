@@ -44,6 +44,9 @@ Current interface features:
 - Check selected-scene band availability against downloaded GeoTIFF files and manifest URLs.
 - Select a band row to switch the preview window to that band image.
 - Export basket scenes to `outputs/selected_scenes.csv`.
+- Run GDAL preprocessing for basket scenes, clipping them to the configured AOI and saving rasters under `outputs/preprocessed/`.
+- Choose Sentinel-2 preprocessing resolution: `10 m`, `20 m`, or `30 m`; Landsat remains fixed at `30 m`.
+- Manage preprocessing run folders from the app, including deleting one or more old runs.
 
 ## Code Layout
 
@@ -54,5 +57,22 @@ glacier_app/
   bands.py              band availability checks and GeoTIFF preview rendering
   config.py             project paths and band definitions
   data.py               manifest loading and row normalization
+  preprocessing.py      GDAL clipping/reprojection for basket scenes
   preview.py            zoom, fit, and pan behavior for the preview canvas
 ```
+
+## Preprocessing
+
+The `Run Preprocessing` button processes scenes currently in the basket.
+
+Current first-pass settings:
+
+- AOI: `config/aoi.json`
+- Target CRS: `EPSG:32628`
+- Sentinel-2 target resolution: user-selectable `10 m`, `20 m`, or `30 m`
+- Landsat target resolution: fixed `30 m`
+- Output folder: `outputs/preprocessed/`
+- Each run folder: `outputs/preprocessed/run_YYYYMMDD_HHMMSS_s2XXm/`
+- Run manifest: `preprocessed_manifest.csv`
+- Run log: `preprocess.log`
+- One or more old run folders can be selected and deleted from the `Preprocessing Runs` manager in the app.

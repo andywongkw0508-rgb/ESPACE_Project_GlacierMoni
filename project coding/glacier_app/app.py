@@ -2,13 +2,21 @@ from __future__ import annotations
 
 import csv
 import json
+import threading
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from .bands import available_band_labels, band_preview_png, check_scene_bands
-from .config import APP_DIR, DATA_ROOT, MANIFEST
+from .config import (
+    APP_DIR,
+    DATA_ROOT,
+    DEFAULT_SENTINEL_PREPROCESS_RESOLUTION,
+    MANIFEST,
+    SENTINEL_PREPROCESS_RESOLUTIONS,
+)
 from .data import load_rows
+from .preprocessing import PreprocessResult, delete_preprocess_run, list_preprocess_runs, preprocess_rows
 from .preview import PreviewController
 
 
@@ -31,6 +39,7 @@ class ImageryApp(tk.Tk):
         self.cloud_var = tk.DoubleVar(value=25.0)
         self.search_var = tk.StringVar(value="")
         self.status_var = tk.StringVar(value="")
+        self.sentinel_resolution_var = tk.StringVar(value=DEFAULT_SENTINEL_PREPROCESS_RESOLUTION)
 
         self.configure_style()
         self.build_layout()
@@ -112,10 +121,40 @@ class ImageryApp(tk.Tk):
         self.metric_total.pack(anchor="w")
         ttk.Label(panel, text="matching scenes", style="Muted.TLabel").pack(anchor="w")
 
+        self.build_run_manager(panel)
+
         #ttk.Separator(panel).pack(fill="x", pady=14)
         #ttk.Label(panel, text="Next modules", font=("Segoe UI", 12, "bold")).pack(anchor="w")
         #for item in ("Band checker", "QGIS preprocessing", "NDSI / NDWI masks", "AI training set"):
         #    ttk.Label(panel, text=f"- {item}", style="Muted.TLabel").pack(anchor="w", pady=(4, 0))
+
+    def build_run_manager(self, parent: ttk.Frame) -> None:
+        ttk.Separator(parent).pack(fill="x", pady=14)
+        ttk.Label(parent, text="Preprocessing Runs", font=("Segoe UI", 12, "bold")).pack(anchor="w")
+        ttk.Label(parent, text="Select one or more old output folders to delete.", style="Muted.TLabel", wraplength=230).pack(
+            anchor="w", pady=(3, 8)
+        )
+
+        columns = ("run", "rasters", "modified")
+        self.runs_tree = ttk.Treeview(parent, columns=columns, show="headings", height=5, selectmode="extended")
+        for column, heading, width in (
+            ("run", "Run", 112),
+            ("rasters", "Files", 44),
+            ("modified", "Modified", 88),
+        ):
+            self.runs_tree.heading(column, text=heading)
+            self.runs_tree.column(column, width=width, anchor="w", stretch=column == "run")
+        self.runs_tree.pack(fill="x")
+
+        buttons = ttk.Frame(parent, style="Panel.TFrame")
+        buttons.pack(fill="x", pady=(8, 0))
+        buttons.columnconfigure(0, weight=1)
+        buttons.columnconfigure(1, weight=1)
+        ttk.Button(buttons, text="Refresh", command=self.refresh_preprocess_runs).grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        ttk.Button(buttons, text="Delete Selected", command=self.delete_selected_preprocess_run).grid(
+            row=0, column=1, sticky="ew"
+        )
+        self.refresh_preprocess_runs()
 
     def build_table(self, parent: ttk.Frame) -> None:
         panel = ttk.Frame(parent, style="Panel.TFrame", padding=10)
@@ -165,9 +204,24 @@ class ImageryApp(tk.Tk):
         header.columnconfigure(0, weight=1)
         self.basket_label = ttk.Label(header, text="Scene Selection Basket (0)", font=("Segoe UI", 12, "bold"))
         self.basket_label.grid(row=0, column=0, sticky="w")
-        ttk.Button(header, text="Remove", command=self.remove_selected_basket_scene).grid(row=0, column=1, padx=(0, 6))
-        ttk.Button(header, text="Clear", command=self.clear_basket).grid(row=0, column=2, padx=(0, 6))
-        ttk.Button(header, text="Export CSV", command=self.export_basket_csv).grid(row=0, column=3)
+
+        controls = ttk.Frame(basket_panel, style="Panel.TFrame")
+        controls.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+        controls.columnconfigure(6, weight=1)
+        ttk.Label(controls, text="Sentinel resolution (m)", style="Muted.TLabel").grid(row=0, column=0, padx=(0, 4))
+        self.sentinel_resolution_combo = ttk.Combobox(
+            controls,
+            textvariable=self.sentinel_resolution_var,
+            values=SENTINEL_PREPROCESS_RESOLUTIONS,
+            state="readonly",
+            width=4,
+        )
+        self.sentinel_resolution_combo.grid(row=0, column=1, padx=(0, 10))
+        ttk.Button(controls, text="Remove", command=self.remove_selected_basket_scene).grid(row=0, column=2, padx=(0, 6))
+        ttk.Button(controls, text="Clear", command=self.clear_basket).grid(row=0, column=3, padx=(0, 6))
+        ttk.Button(controls, text="Export CSV", command=self.export_basket_csv).grid(row=0, column=4, padx=(0, 6))
+        self.preprocess_button = ttk.Button(controls, text="Run Preprocessing", command=self.run_preprocessing)
+        self.preprocess_button.grid(row=0, column=5)
 
         basket_columns = ("date", "sensor", "cloud", "item")
         self.basket_tree = ttk.Treeview(basket_panel, columns=basket_columns, show="headings", height=5, selectmode="browse")
@@ -179,7 +233,7 @@ class ImageryApp(tk.Tk):
         ):
             self.basket_tree.heading(column, text=heading)
             self.basket_tree.column(column, width=width, anchor="w", stretch=column == "item")
-        self.basket_tree.grid(row=1, column=0, sticky="ew")
+        self.basket_tree.grid(row=2, column=0, sticky="ew")
         self.basket_tree.bind("<Double-1>", self.focus_basket_scene)
 
     def build_details(self, parent: ttk.Frame) -> None:
@@ -523,6 +577,116 @@ class ImageryApp(tk.Tk):
                     }
                 )
         self.status_var.set(f"Exported {len(rows)} basket scenes to {output_path}")
+
+    def run_preprocessing(self) -> None:
+        if not self.basket_rows:
+            self.status_var.set("Add scenes to the basket before preprocessing.")
+            return
+        rows = sorted(self.basket_rows.values(), key=lambda item: (item.get("date", ""), item.get("sensor", "")))
+        sentinel_resolution = self.sentinel_resolution_var.get()
+        self.preprocess_button.configure(state="disabled")
+        self.status_var.set(
+            f"Starting preprocessing for {len(rows)} scene(s). Sentinel: {sentinel_resolution} m; Landsat: 30 m."
+        )
+        worker = threading.Thread(target=self.preprocess_worker, args=(rows, sentinel_resolution), daemon=True)
+        worker.start()
+
+    def preprocess_worker(self, rows: list[dict[str, str]], sentinel_resolution: str) -> None:
+        try:
+            result = preprocess_rows(
+                rows,
+                sentinel_resolution=sentinel_resolution,
+                progress=lambda message: self.after(0, self.status_var.set, message),
+            )
+        except Exception as exc:
+            self.after(0, self.preprocess_finished, None, exc)
+            return
+        self.after(0, self.preprocess_finished, result, None)
+
+    def preprocess_finished(self, result: PreprocessResult | None, error: Exception | None) -> None:
+        self.preprocess_button.configure(state="normal")
+        if error:
+            self.status_var.set(f"Preprocessing failed: {error}")
+            messagebox.showerror("Preprocessing failed", str(error))
+            return
+        if result is None:
+            return
+        self.status_var.set(
+            f"Preprocessed {result.raster_count} raster(s) from {result.scene_count} scene(s). "
+            f"Run folder: {result.run_dir}"
+        )
+        self.refresh_preprocess_runs()
+        messagebox.showinfo(
+            "Preprocessing complete",
+            f"Rasters written: {result.raster_count}\n"
+            f"Scenes processed: {result.scene_count}\n\n"
+            f"Run folder:\n{result.run_dir}\n\n"
+            f"Manifest:\n{result.output_manifest}\n\n"
+            f"Log:\n{result.log_file}",
+        )
+
+    def refresh_preprocess_runs(self) -> None:
+        if not hasattr(self, "runs_tree"):
+            return
+        self.runs_tree.delete(*self.runs_tree.get_children())
+        for run in list_preprocess_runs():
+            path = Path(run["path"])
+            self.runs_tree.insert(
+                "",
+                "end",
+                iid=str(path),
+                values=(
+                    run["name"],
+                    run["raster_count"],
+                    run["modified"],
+                ),
+            )
+
+    def selected_preprocess_run_paths(self) -> list[Path]:
+        return [Path(item_id) for item_id in self.runs_tree.selection()]
+
+    def delete_selected_preprocess_run(self) -> None:
+        run_paths = self.selected_preprocess_run_paths()
+        if not run_paths:
+            self.status_var.set("Select one or more preprocessing runs to delete.")
+            return
+        if len(run_paths) == 1:
+            prompt = f"This will permanently delete this output folder:\n\n{run_paths[0]}\n\nContinue?"
+        else:
+            listed_runs = "\n".join(f"- {path.name}" for path in run_paths[:10])
+            remaining = len(run_paths) - 10
+            if remaining > 0:
+                listed_runs = f"{listed_runs}\n...and {remaining} more"
+            prompt = (
+                f"This will permanently delete {len(run_paths)} preprocessing output folders:\n\n"
+                f"{listed_runs}\n\nContinue?"
+            )
+        confirmed = messagebox.askyesno(
+            "Delete preprocessing runs?",
+            prompt,
+        )
+        if not confirmed:
+            self.status_var.set("Preprocessing run delete cancelled.")
+            return
+        deleted_runs = []
+        failed_runs = []
+        for run_path in run_paths:
+            try:
+                delete_preprocess_run(run_path)
+            except Exception as exc:
+                failed_runs.append((run_path, exc))
+            else:
+                deleted_runs.append(run_path)
+        self.refresh_preprocess_runs()
+        if failed_runs:
+            details = "\n".join(f"{path.name}: {exc}" for path, exc in failed_runs)
+            self.status_var.set(f"Deleted {len(deleted_runs)} run(s); {len(failed_runs)} failed.")
+            messagebox.showerror("Delete failed", details)
+            return
+        if len(deleted_runs) == 1:
+            self.status_var.set(f"Deleted preprocessing run: {deleted_runs[0].name}")
+        else:
+            self.status_var.set(f"Deleted {len(deleted_runs)} preprocessing runs.")
 
     def copy_selected_scene_id(self) -> None:
         row = self.selected_row()

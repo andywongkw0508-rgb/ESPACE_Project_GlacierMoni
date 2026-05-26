@@ -8,7 +8,15 @@ PROJECT_ROOT = APP_DIR.parent
 DATA_ROOT = PROJECT_ROOT / "data" / "vatnajokull_28WDS_by_band"
 MANIFEST = DATA_ROOT / "master_manifest.csv"
 GDAL_TRANSLATE = Path("C:/Program Files/QGIS 4.0.2/bin/gdal_translate.exe")
+GDALWARP = Path("C:/Program Files/QGIS 4.0.2/bin/gdalwarp.exe")
 BAND_PREVIEW_CACHE = APP_DIR / "outputs" / "band_previews"
+AOI_CONFIG = APP_DIR / "config" / "aoi.json"
+PREPROCESSED_DIR = APP_DIR / "outputs" / "preprocessed"
+PREPROCESS_LOG_DIR = APP_DIR / "logs"
+PREPROCESS_TARGET_CRS = "EPSG:32628"
+SENTINEL_PREPROCESS_RESOLUTIONS = ["10", "20", "30"]
+DEFAULT_SENTINEL_PREPROCESS_RESOLUTION = "30"
+LANDSAT_PREPROCESS_RESOLUTION = "30"
 
 SENTINEL_BANDS = [
     ("visual", "Visual", "raw_visual_url"),
