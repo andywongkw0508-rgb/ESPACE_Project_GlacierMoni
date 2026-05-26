@@ -19,6 +19,7 @@ from .data import load_rows
 from .indexes import IndexResult, calculate_run_indexes
 from .preprocessing import PreprocessResult, delete_preprocess_run, list_preprocess_runs, preprocess_rows
 from .preview import PreviewController
+from .results import ProcessingOutput, list_processing_outputs, processing_preview_png
 
 
 class ImageryApp(tk.Tk):
@@ -33,6 +34,7 @@ class ImageryApp(tk.Tk):
         self.preview: PreviewController | None = None
         self.current_scene_row: dict[str, str] | None = None
         self.current_band_checks: list[dict[str, object]] = []
+        self.current_processing_outputs: list[ProcessingOutput] = []
         self.basket_rows: dict[str, dict[str, str]] = {}
 
         self.sensor_var = tk.StringVar(value="All sensors")
@@ -132,7 +134,7 @@ class ImageryApp(tk.Tk):
     def build_run_manager(self, parent: ttk.Frame) -> None:
         ttk.Separator(parent).pack(fill="x", pady=14)
         ttk.Label(parent, text="Preprocessing Runs", font=("Segoe UI", 12, "bold")).pack(anchor="w")
-        ttk.Label(parent, text="Select one or more old output folders to delete.", style="Muted.TLabel", wraplength=230).pack(
+        ttk.Label(parent, text="Select runs to calculate, load, or delete results.", style="Muted.TLabel", wraplength=230).pack(
             anchor="w", pady=(3, 8)
         )
 
@@ -157,6 +159,9 @@ class ImageryApp(tk.Tk):
         )
         self.index_button = ttk.Button(buttons, text="Calculate Indexes", command=self.calculate_selected_indexes)
         self.index_button.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        ttk.Button(buttons, text="Load Results", command=self.load_selected_processing_results).grid(
+            row=2, column=0, columnspan=2, sticky="ew", pady=(6, 0)
+        )
         self.refresh_preprocess_runs()
 
     def build_table(self, parent: ttk.Frame) -> None:
@@ -279,8 +284,11 @@ class ImageryApp(tk.Tk):
         self.preview_canvas.bind("<Button-5>", lambda event: self.preview.zoom_by(-1))
         self.preview_canvas.bind("<Configure>", lambda _event: self.preview.center_if_needed())
 
-        band_panel = ttk.Frame(panel, style="Panel.TFrame", padding=8)
-        band_panel.grid(row=3, column=0, sticky="ew", pady=(0, 12))
+        self.preview_tabs = ttk.Notebook(panel)
+        self.preview_tabs.grid(row=3, column=0, sticky="ew", pady=(0, 12))
+
+        band_panel = ttk.Frame(self.preview_tabs, style="Panel.TFrame", padding=8)
+        self.preview_tabs.add(band_panel, text="Bands")
         band_panel.columnconfigure(0, weight=1)
         ttk.Label(band_panel, text="Band Checker", font=("Segoe UI", 12, "bold")).grid(row=0, column=0, sticky="w")
         ttk.Label(
@@ -301,6 +309,31 @@ class ImageryApp(tk.Tk):
             self.band_tree.column(column, width=width, anchor="w", stretch=column == "file")
         self.band_tree.grid(row=2, column=0, sticky="ew")
         self.band_tree.bind("<<TreeviewSelect>>", self.on_band_selected)
+
+        results_panel = ttk.Frame(self.preview_tabs, style="Panel.TFrame", padding=8)
+        self.preview_tabs.add(results_panel, text="Processing Results")
+        results_panel.columnconfigure(0, weight=1)
+        ttk.Label(results_panel, text="Processing Results", font=("Segoe UI", 12, "bold")).grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            results_panel,
+            text="Select a result row to view it in the preview window.",
+            style="Muted.TLabel",
+        ).grid(row=1, column=0, sticky="w", pady=(2, 6))
+
+        result_columns = ("run", "type", "result", "scene")
+        self.result_tree = ttk.Treeview(
+            results_panel, columns=result_columns, show="headings", height=7, selectmode="browse"
+        )
+        for column, heading, width in (
+            ("run", "Run", 112),
+            ("type", "Type", 92),
+            ("result", "Result", 78),
+            ("scene", "Scene ID", 285),
+        ):
+            self.result_tree.heading(column, text=heading)
+            self.result_tree.column(column, width=width, anchor="w", stretch=column == "scene")
+        self.result_tree.grid(row=2, column=0, sticky="ew")
+        self.result_tree.bind("<<TreeviewSelect>>", self.on_processing_result_selected)
 
         self.detail_text = tk.Text(
             panel,
@@ -686,6 +719,7 @@ class ImageryApp(tk.Tk):
             self.status_var.set(f"Deleted {len(deleted_runs)} run(s); {len(failed_runs)} failed.")
             messagebox.showerror("Delete failed", details)
             return
+        self.clear_processing_results()
         if len(deleted_runs) == 1:
             self.status_var.set(f"Deleted preprocessing run: {deleted_runs[0].name}")
         else:
@@ -733,12 +767,77 @@ class ImageryApp(tk.Tk):
         if len(results) > 3:
             manifest_lines = f"{manifest_lines}\n...and {len(results) - 3} more"
         self.status_var.set(f"Created {index_count} index raster(s) from {scene_count} scene(s).")
+        self.load_processing_results_for_paths([result.run_dir for result in results])
         messagebox.showinfo(
             "Index calculation complete",
             f"Index rasters written: {index_count}\n"
             f"Scenes scanned: {scene_count}\n\n"
             f"Manifest file(s):\n{manifest_lines}",
         )
+
+    def load_selected_processing_results(self) -> None:
+        run_paths = self.selected_preprocess_run_paths()
+        if not run_paths:
+            self.status_var.set("Select one or more preprocessing runs before loading results.")
+            return
+        self.load_processing_results_for_paths(run_paths)
+
+    def load_processing_results_for_paths(self, run_paths: list[Path]) -> None:
+        try:
+            outputs = list_processing_outputs(run_paths)
+        except Exception as exc:
+            self.status_var.set(f"Could not load processing results: {exc}")
+            messagebox.showerror("Load results failed", str(exc))
+            return
+        self.current_processing_outputs = outputs
+        self.refresh_processing_results()
+        self.preview_tabs.select(1)
+        if outputs:
+            self.status_var.set(f"Loaded {len(outputs)} processing result raster(s).")
+        else:
+            self.status_var.set("No processing result rasters were found for the selected run(s).")
+
+    def refresh_processing_results(self) -> None:
+        self.result_tree.delete(*self.result_tree.get_children())
+        for index, output in enumerate(self.current_processing_outputs):
+            self.result_tree.insert(
+                "",
+                "end",
+                iid=str(index),
+                values=(output.run_name, output.kind, output.label, output.scene_id),
+            )
+
+    def clear_processing_results(self) -> None:
+        self.current_processing_outputs = []
+        if hasattr(self, "result_tree"):
+            self.result_tree.delete(*self.result_tree.get_children())
+
+    def on_processing_result_selected(self, _event: tk.Event) -> None:
+        selection = self.result_tree.selection()
+        if not selection:
+            return
+        output = self.current_processing_outputs[int(selection[0])]
+        try:
+            preview_path = processing_preview_png(output)
+        except RuntimeError as exc:
+            self.status_var.set(str(exc))
+            return
+        self.preview.show_image(str(preview_path), preserve_view=True)
+        self.show_details_text(self.processing_result_details(output))
+        self.status_var.set(f"Showing {output.kind.lower()} result: {output.label}")
+
+    def processing_result_details(self, output: ProcessingOutput) -> str:
+        fields = [
+            ("Run", output.run_name),
+            ("Type", output.kind),
+            ("Result", output.label),
+            ("Scene ID", output.scene_id),
+            ("Date", output.date),
+            ("Sensor", output.sensor),
+            ("Formula", output.formula),
+            ("Output", str(output.output_file)),
+        ]
+        return "\n".join(f"{label}: {value}" for label, value in fields if value)
 
     def copy_selected_scene_id(self) -> None:
         row = self.selected_row()

@@ -30,6 +30,7 @@ Filters and actions | Scene table | Preview and scene details
 - Sentinel-2 preprocessing resolution selector.
 - Preprocessing run manager for reviewing and deleting one or more old output folders.
 - Run-level index calculation action for NDSI and NDWI.
+- Processing result browser for previewing output rasters.
 - Preview panel for quick visual inspection.
 - Image zoom controls for closer visual inspection.
 - Drag-to-pan movement inside the preview canvas.
@@ -43,6 +44,7 @@ Filters and actions | Scene table | Preview and scene details
 - Scene selection basket with CSV export.
 - GDAL preprocessing launcher for selected basket scenes.
 - NDSI and NDWI calculator for selected preprocessing run folders.
+- Result preview tab for preprocessed bands and index rasters.
 - Interactive preview with zoom and pan.
 - Band checker for selected scenes with preview switching.
 
@@ -90,10 +92,20 @@ outputs/preprocessed/run_YYYYMMDD_HHMMSS_s2XXm/indexes/
 
 Each run receives an `index_manifest.csv` and `index_calculation.log`.
 
+## Result Preview
+
+The preview area includes a `Processing Results` tab. After the user selects one or more preprocessing runs and clicks `Load Results`, the app lists available output rasters from:
+
+```text
+preprocessed_manifest.csv
+index_manifest.csv
+```
+
+Selecting a result row renders that GeoTIFF in the main preview window.
+
 ## Later Screens
 
 - QGIS preprocessing launcher.
-- Result preview for generated NDSI and NDWI rasters.
 - NDVI and optional mask refinement.
 - AI model preparation panel.
 - Validation and map export panel.

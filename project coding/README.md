@@ -48,6 +48,7 @@ Current interface features:
 - Choose Sentinel-2 preprocessing resolution: `10 m`, `20 m`, or `30 m`; Landsat remains fixed at `30 m`.
 - Manage preprocessing run folders from the app, including deleting one or more old runs.
 - Calculate NDSI and NDWI rasters from selected preprocessing run folders.
+- Load preprocessed and index result rasters into the preview window.
 
 ## Code Layout
 
@@ -61,6 +62,7 @@ glacier_app/
   indexes.py            NDSI and NDWI calculation from preprocessed bands
   preprocessing.py      GDAL clipping/reprojection for basket scenes
   preview.py            zoom, fit, and pan behavior for the preview canvas
+  results.py            processing output listing and preview rendering
 ```
 
 ## Preprocessing
@@ -98,3 +100,12 @@ Each run also receives:
 
 - Index manifest: `index_manifest.csv`
 - Index log: `index_calculation.log`
+
+## Result Preview
+
+The `Load Results` button reads selected preprocessing run folders and fills the `Processing Results` tab. Selecting a result row renders the GeoTIFF into the main preview window.
+
+The result browser includes both:
+
+- Preprocessed band rasters from `preprocessed_manifest.csv`
+- NDSI and NDWI rasters from `index_manifest.csv`
