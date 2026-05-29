@@ -17,6 +17,7 @@ from .config import (
 )
 from .data import load_rows
 from .indexes import IndexResult, calculate_run_indexes
+from .masks import MaskResult, build_mask, default_threshold_for
 from .preprocessing import PreprocessResult, delete_preprocess_run, list_preprocess_runs, preprocess_rows
 from .preview import PreviewController
 from .results import ProcessingOutput, list_processing_outputs, processing_preview_png
@@ -35,6 +36,7 @@ class ImageryApp(tk.Tk):
         self.current_scene_row: dict[str, str] | None = None
         self.current_band_checks: list[dict[str, object]] = []
         self.current_processing_outputs: list[ProcessingOutput] = []
+        self.loaded_processing_run_paths: list[Path] = []
         self.basket_rows: dict[str, dict[str, str]] = {}
 
         self.sensor_var = tk.StringVar(value="All sensors")
@@ -43,6 +45,8 @@ class ImageryApp(tk.Tk):
         self.search_var = tk.StringVar(value="")
         self.status_var = tk.StringVar(value="")
         self.sentinel_resolution_var = tk.StringVar(value=DEFAULT_SENTINEL_PREPROCESS_RESOLUTION)
+        self.mask_threshold_var = tk.StringVar(value="0.40")
+        self.mask_stats_var = tk.StringVar(value="")
 
         self.configure_style()
         self.build_layout()
@@ -334,6 +338,17 @@ class ImageryApp(tk.Tk):
             self.result_tree.column(column, width=width, anchor="w", stretch=column == "scene")
         self.result_tree.grid(row=2, column=0, sticky="ew")
         self.result_tree.bind("<<TreeviewSelect>>", self.on_processing_result_selected)
+
+        mask_controls = ttk.Frame(results_panel, style="Panel.TFrame")
+        mask_controls.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+        mask_controls.columnconfigure(3, weight=1)
+        ttk.Label(mask_controls, text="Result >=", style="Muted.TLabel").grid(row=0, column=0, padx=(0, 4))
+        ttk.Entry(mask_controls, textvariable=self.mask_threshold_var, width=7).grid(row=0, column=1, padx=(0, 6))
+        self.mask_button = ttk.Button(mask_controls, text="Build Mask", command=self.build_selected_mask)
+        self.mask_button.grid(row=0, column=2, padx=(0, 8))
+        ttk.Label(mask_controls, textvariable=self.mask_stats_var, style="Muted.TLabel").grid(
+            row=0, column=3, sticky="w"
+        )
 
         self.detail_text = tk.Text(
             panel,
@@ -782,41 +797,61 @@ class ImageryApp(tk.Tk):
             return
         self.load_processing_results_for_paths(run_paths)
 
-    def load_processing_results_for_paths(self, run_paths: list[Path]) -> None:
+    def load_processing_results_for_paths(self, run_paths: list[Path], selected_output: Path | None = None) -> None:
         try:
             outputs = list_processing_outputs(run_paths)
         except Exception as exc:
             self.status_var.set(f"Could not load processing results: {exc}")
             messagebox.showerror("Load results failed", str(exc))
             return
+        self.loaded_processing_run_paths = run_paths
         self.current_processing_outputs = outputs
-        self.refresh_processing_results()
+        self.refresh_processing_results(selected_output)
         self.preview_tabs.select(1)
         if outputs:
             self.status_var.set(f"Loaded {len(outputs)} processing result raster(s).")
         else:
             self.status_var.set("No processing result rasters were found for the selected run(s).")
 
-    def refresh_processing_results(self) -> None:
+    def refresh_processing_results(self, selected_output: Path | None = None) -> None:
         self.result_tree.delete(*self.result_tree.get_children())
+        selected_iid = ""
         for index, output in enumerate(self.current_processing_outputs):
+            iid = str(index)
             self.result_tree.insert(
                 "",
                 "end",
-                iid=str(index),
+                iid=iid,
                 values=(output.run_name, output.kind, output.label, output.scene_id),
             )
+            if selected_output and output.output_file.resolve() == selected_output.resolve():
+                selected_iid = iid
+        if selected_iid:
+            self.result_tree.selection_set(selected_iid)
+            self.result_tree.focus(selected_iid)
+            self.result_tree.see(selected_iid)
+            self.on_processing_result_selected(tk.Event())
 
     def clear_processing_results(self) -> None:
         self.current_processing_outputs = []
+        self.loaded_processing_run_paths = []
+        self.mask_stats_var.set("")
         if hasattr(self, "result_tree"):
             self.result_tree.delete(*self.result_tree.get_children())
 
-    def on_processing_result_selected(self, _event: tk.Event) -> None:
+    def selected_processing_output(self) -> ProcessingOutput | None:
         selection = self.result_tree.selection()
         if not selection:
+            return None
+        return self.current_processing_outputs[int(selection[0])]
+
+    def on_processing_result_selected(self, _event: tk.Event) -> None:
+        output = self.selected_processing_output()
+        if output is None:
             return
-        output = self.current_processing_outputs[int(selection[0])]
+        default_threshold = default_threshold_for(output)
+        if default_threshold is not None:
+            self.mask_threshold_var.set(f"{default_threshold:.2f}")
         try:
             preview_path = processing_preview_png(output)
         except RuntimeError as exc:
@@ -825,6 +860,54 @@ class ImageryApp(tk.Tk):
         self.preview.show_image(str(preview_path), preserve_view=True)
         self.show_details_text(self.processing_result_details(output))
         self.status_var.set(f"Showing {output.kind.lower()} result: {output.label}")
+
+    def build_selected_mask(self) -> None:
+        output = self.selected_processing_output()
+        if output is None:
+            self.status_var.set("Select an NDSI or NDWI result before building a mask.")
+            return
+        try:
+            threshold = float(self.mask_threshold_var.get())
+        except ValueError:
+            self.status_var.set("Mask threshold must be a number.")
+            return
+        if threshold < -1 or threshold > 1:
+            self.status_var.set("Mask threshold should be between -1 and 1.")
+            return
+        self.mask_button.configure(state="disabled")
+        self.status_var.set(f"Building {output.label} mask with threshold >= {threshold:.3f}.")
+        worker = threading.Thread(target=self.mask_worker, args=(output, threshold), daemon=True)
+        worker.start()
+
+    def mask_worker(self, output: ProcessingOutput, threshold: float) -> None:
+        try:
+            result = build_mask(output, threshold)
+        except Exception as exc:
+            self.after(0, self.mask_finished, None, exc)
+            return
+        self.after(0, self.mask_finished, result, None)
+
+    def mask_finished(self, result: MaskResult | None, error: Exception | None) -> None:
+        self.mask_button.configure(state="normal")
+        if error:
+            self.status_var.set(f"Mask failed: {error}")
+            messagebox.showerror("Mask failed", str(error))
+            return
+        if result is None:
+            return
+        run_paths = self.loaded_processing_run_paths or [result.run_dir]
+        self.load_processing_results_for_paths(run_paths, selected_output=result.output.output_file)
+        stats_text = f"{result.area_km2:.3f} km2 | {result.mask_pixels:,} pixels"
+        self.mask_stats_var.set(stats_text)
+        self.status_var.set(f"Mask created: {stats_text}")
+        messagebox.showinfo(
+            "Mask complete",
+            f"Mask pixels: {result.mask_pixels:,}\n"
+            f"Valid pixels: {result.valid_pixels:,}\n"
+            f"Area: {result.area_km2:.3f} km2\n\n"
+            f"Mask file:\n{result.output.output_file}\n\n"
+            f"Manifest:\n{result.manifest}",
+        )
 
     def processing_result_details(self, output: ProcessingOutput) -> str:
         fields = [
@@ -835,6 +918,8 @@ class ImageryApp(tk.Tk):
             ("Date", output.date),
             ("Sensor", output.sensor),
             ("Formula", output.formula),
+            ("Mask pixels", f"{output.pixel_count:,}" if output.pixel_count else ""),
+            ("Area", f"{output.area_km2:.3f} km2" if output.area_km2 else ""),
             ("Output", str(output.output_file)),
         ]
         return "\n".join(f"{label}: {value}" for label, value in fields if value)

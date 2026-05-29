@@ -24,6 +24,8 @@ class ProcessingOutput:
     sensor: str
     formula: str
     output_file: Path
+    pixel_count: int = 0
+    area_km2: float = 0.0
 
 
 def list_processing_outputs(run_dirs: list[Path]) -> list[ProcessingOutput]:
@@ -31,8 +33,40 @@ def list_processing_outputs(run_dirs: list[Path]) -> list[ProcessingOutput]:
     for run_dir in run_dirs:
         run_dir = checked_run_dir(run_dir)
         outputs.extend(read_index_outputs(run_dir))
+        outputs.extend(read_mask_outputs(run_dir))
         outputs.extend(read_preprocessed_outputs(run_dir))
     outputs.sort(key=lambda item: (item.run_name, item.date, item.scene_id, item.kind, item.label))
+    return outputs
+
+
+def read_mask_outputs(run_dir: Path) -> list[ProcessingOutput]:
+    manifest = run_dir / "mask_manifest.csv"
+    if not manifest.exists():
+        return []
+
+    outputs = []
+    with manifest.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            if row.get("status") != "ok":
+                continue
+            output_file = existing_output_path(row.get("output_file", ""))
+            if not output_file:
+                continue
+            outputs.append(
+                ProcessingOutput(
+                    run_name=run_dir.name,
+                    kind="Mask",
+                    label=f"{row.get('source_index', '')} Mask".strip(),
+                    scene_id=row.get("scene_id", ""),
+                    date=row.get("date", ""),
+                    sensor=row.get("sensor", ""),
+                    formula=row.get("formula", ""),
+                    output_file=output_file,
+                    pixel_count=parse_int(row.get("mask_pixels", "")),
+                    area_km2=parse_float(row.get("area_km2", "")),
+                )
+            )
     return outputs
 
 
@@ -117,6 +151,8 @@ def processing_preview_png(output: ProcessingOutput) -> Path:
     ]
     if output.kind == "Index":
         command.extend(["-scale", "-1", "1", "0", "255"])
+    elif output.kind == "Mask":
+        command.extend(["-scale", "0", "1", "0", "255"])
     else:
         command.append("-scale")
     command.extend([str(source), str(preview_path)])
@@ -153,3 +189,17 @@ def checked_run_dir(run_dir: Path) -> Path:
 def safe_name(value: str) -> str:
     cleaned = "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in value)
     return cleaned.strip("_") or "unnamed"
+
+
+def parse_int(value: str) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def parse_float(value: str) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0

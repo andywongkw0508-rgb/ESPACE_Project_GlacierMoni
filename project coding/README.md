@@ -49,6 +49,7 @@ Current interface features:
 - Manage preprocessing run folders from the app, including deleting one or more old runs.
 - Calculate NDSI and NDWI rasters from selected preprocessing run folders.
 - Load preprocessed and index result rasters into the preview window.
+- Build threshold masks from NDSI or NDWI results and report mask area.
 
 ## Code Layout
 
@@ -60,6 +61,7 @@ glacier_app/
   config.py             project paths and band definitions
   data.py               manifest loading and row normalization
   indexes.py            NDSI and NDWI calculation from preprocessed bands
+  masks.py              threshold mask generation and area statistics
   preprocessing.py      GDAL clipping/reprojection for basket scenes
   preview.py            zoom, fit, and pan behavior for the preview canvas
   results.py            processing output listing and preview rendering
@@ -109,3 +111,20 @@ The result browser includes both:
 
 - Preprocessed band rasters from `preprocessed_manifest.csv`
 - NDSI and NDWI rasters from `index_manifest.csv`
+
+## Mask Builder
+
+The `Build Mask` control in the `Processing Results` tab creates binary masks from selected index rasters.
+
+Current defaults:
+
+- NDSI mask threshold: `NDSI >= 0.40`
+- NDWI mask threshold: `NDWI >= 0.20`
+
+Outputs are written under each run folder:
+
+```text
+outputs/preprocessed/run_YYYYMMDD_HHMMSS_s2XXm/masks/
+```
+
+Each run receives a `mask_manifest.csv` with pixel count, valid pixel count, pixel area, and area in square kilometers.

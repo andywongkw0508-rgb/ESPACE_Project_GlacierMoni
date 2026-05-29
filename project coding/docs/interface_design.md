@@ -31,6 +31,7 @@ Filters and actions | Scene table | Preview and scene details
 - Preprocessing run manager for reviewing and deleting one or more old output folders.
 - Run-level index calculation action for NDSI and NDWI.
 - Processing result browser for previewing output rasters.
+- Mask builder controls for thresholding NDSI and NDWI outputs.
 - Preview panel for quick visual inspection.
 - Image zoom controls for closer visual inspection.
 - Drag-to-pan movement inside the preview canvas.
@@ -45,6 +46,7 @@ Filters and actions | Scene table | Preview and scene details
 - GDAL preprocessing launcher for selected basket scenes.
 - NDSI and NDWI calculator for selected preprocessing run folders.
 - Result preview tab for preprocessed bands and index rasters.
+- Threshold mask builder with area statistics.
 - Interactive preview with zoom and pan.
 - Band checker for selected scenes with preview switching.
 
@@ -102,6 +104,25 @@ index_manifest.csv
 ```
 
 Selecting a result row renders that GeoTIFF in the main preview window.
+
+## Mask Builder
+
+The `Processing Results` tab includes threshold controls for building binary masks from selected NDSI or NDWI rasters.
+
+Default thresholds:
+
+```text
+NDSI >= 0.40
+NDWI >= 0.20
+```
+
+Mask outputs are written into:
+
+```text
+outputs/preprocessed/run_YYYYMMDD_HHMMSS_s2XXm/masks/
+```
+
+The app records each mask in `mask_manifest.csv` with pixel count and area in square kilometers.
 
 ## Later Screens
 
