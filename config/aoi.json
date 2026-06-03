@@ -1,11 +1,11 @@
 {
   "name": "southeast_vatnajokull_28WDS",
-  "description": "Southeast Vatnajokull outlet glaciers, coastal margin, and adjacent ocean.",
+  "description": "Southeast Vatnajokull outlet glaciers, coastal margin, and adjacent ocean. Bounds match Sentinel-2 tile 28WDS extent (63.93–64.91°N, 17.11–14.79°W) with small buffer.",
   "crs": "EPSG:4326",
   "bbox": {
-    "west": -17.65,
-    "south": 63.72,
-    "east": -14.55,
-    "north": 64.7
+    "west": -17.15,
+    "south": 63.90,
+    "east": -14.75,
+    "north": 64.95
   }
 }
