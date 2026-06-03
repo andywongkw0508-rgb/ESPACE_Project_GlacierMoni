@@ -3,16 +3,17 @@ from __future__ import annotations
 import csv
 import json
 import shutil
-import subprocess
 import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+from osgeo import gdal
+
 try:
     from .bands import check_scene_bands
-    from .config import AOI_CONFIG, GDALWARP, LANDSAT_PREPROCESS_RESOLUTION, PREPROCESS_TARGET_CRS, PREPROCESSED_DIR
+    from .config import AOI_CONFIG, LANDSAT_PREPROCESS_RESOLUTION, PREPROCESS_TARGET_CRS, PREPROCESSED_DIR
 except ImportError:
     import sys
 
@@ -20,7 +21,6 @@ except ImportError:
     from glacier_app.bands import check_scene_bands
     from glacier_app.config import (
         AOI_CONFIG,
-        GDALWARP,
         LANDSAT_PREPROCESS_RESOLUTION,
         PREPROCESS_TARGET_CRS,
         PREPROCESSED_DIR,
@@ -46,8 +46,6 @@ def preprocess_rows(
 ) -> PreprocessResult:
     if not rows:
         raise ValueError("No scenes were provided for preprocessing.")
-    if not GDALWARP.exists():
-        raise FileNotFoundError(f"Missing GDAL warp executable: {GDALWARP}")
 
     aoi = load_aoi()
     PREPROCESSED_DIR.mkdir(parents=True, exist_ok=True)
@@ -96,15 +94,18 @@ def preprocess_rows(
                 source = Path(str(check["matched_path"]))
                 output = scene_dir / f"{scene_label}_{safe_name(band_label)}_preprocessed.tif"
                 resolution = scene_resolution(row, sentinel_resolution)
-                command = gdalwarp_command(source, output, row, band_label, aoi, sentinel_resolution)
-                log_handle.write(" ".join(f'"{part}"' if " " in part else part for part in command) + "\n")
-                result = subprocess.run(command, capture_output=True, text=True, timeout=180, check=False)
-                if result.returncode == 0 and output.exists():
+                log_handle.write(
+                    f"warp {source} -> {output} "
+                    f"[dstSRS={PREPROCESS_TARGET_CRS} res={resolution}m "
+                    f"bounds=({aoi['west']},{aoi['south']},{aoi['east']},{aoi['north']})]\n"
+                )
+                try:
+                    gdal_warp(source, output, row, band_label, aoi, sentinel_resolution)
                     raster_count += 1
                     writer.writerow(row_result(row, band_label, resolution, source, output, "ok", ""))
                     emit(progress, f"Created {output.name}")
-                else:
-                    message = last_process_message(result)
+                except Exception as exc:
+                    message = str(exc)
                     writer.writerow(row_result(row, band_label, resolution, source, output, "failed", message))
                     log_handle.write(f"FAILED {scene_id} {band_label}: {message}\n")
 
@@ -163,43 +164,32 @@ def load_aoi() -> dict[str, float]:
     }
 
 
-def gdalwarp_command(
+def gdal_warp(
     source: Path,
     output: Path,
     row: dict[str, str],
     band_label: str,
     aoi: dict[str, float],
     sentinel_resolution: str,
-) -> list[str]:
-    resolution = scene_resolution(row, sentinel_resolution)
+) -> None:
+    gdal.UseExceptions()
+    resolution = float(scene_resolution(row, sentinel_resolution))
     resampling = "near" if band_label.lower() in {"scl", "qa pixel"} else "bilinear"
-    return [
-        str(GDALWARP),
-        "-overwrite",
-        "-of",
-        "GTiff",
-        "-t_srs",
-        PREPROCESS_TARGET_CRS,
-        "-te_srs",
-        "EPSG:4326",
-        "-te",
-        str(aoi["west"]),
-        str(aoi["south"]),
-        str(aoi["east"]),
-        str(aoi["north"]),
-        "-tr",
-        resolution,
-        resolution,
-        "-tap",
-        "-r",
-        resampling,
-        "-co",
-        "COMPRESS=DEFLATE",
-        "-co",
-        "TILED=YES",
-        str(source),
-        str(output),
-    ]
+    options = gdal.WarpOptions(
+        format="GTiff",
+        dstSRS=PREPROCESS_TARGET_CRS,
+        outputBounds=(aoi["west"], aoi["south"], aoi["east"], aoi["north"]),
+        outputBoundsSRS="EPSG:4326",
+        xRes=resolution,
+        yRes=resolution,
+        targetAlignedPixels=True,
+        resampleAlg=resampling,
+        creationOptions=["COMPRESS=DEFLATE", "TILED=YES"],
+    )
+    ds = gdal.Warp(str(output), str(source), options=options)
+    if ds is None or not output.exists():
+        raise RuntimeError(f"gdal.Warp produced no output for {source.name}")
+    ds = None
 
 
 def scene_resolution(row: dict[str, str], sentinel_resolution: str) -> str:
@@ -228,13 +218,6 @@ def row_result(
         "status": status,
         "message": message,
     }
-
-
-def last_process_message(result: subprocess.CompletedProcess[str]) -> str:
-    text = (result.stderr or result.stdout or "unknown GDAL error").strip()
-    if not text:
-        return f"GDAL returned exit code {result.returncode}."
-    return text.splitlines()[-1]
 
 
 def safe_name(value: str) -> str:

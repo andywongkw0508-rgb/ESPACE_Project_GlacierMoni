@@ -1,29 +1,27 @@
 from __future__ import annotations
 
 import csv
-import json
-import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 try:
-    from .config import PREPROCESSED_DIR, QGIS_PYTHON
+    from .config import PREPROCESSED_DIR
     from .results import ProcessingOutput
+    from . import mask_worker
 except ImportError:
     import sys
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from glacier_app.config import PREPROCESSED_DIR, QGIS_PYTHON
+    from glacier_app.config import PREPROCESSED_DIR
     from glacier_app.results import ProcessingOutput
+    from glacier_app import mask_worker
 
 
 DEFAULT_MASK_THRESHOLDS = {
     "NDSI": 0.40,
     "NDWI": 0.20,
 }
-
-MASK_WORKER = Path(__file__).with_name("mask_worker.py")
 
 
 @dataclass
@@ -44,8 +42,6 @@ def build_mask(output: ProcessingOutput, threshold: float) -> MaskResult:
         raise ValueError("Masks can currently be built from NDSI or NDWI index rasters.")
     if output.label.upper() not in DEFAULT_MASK_THRESHOLDS:
         raise ValueError("Select an NDSI or NDWI result before building a mask.")
-    if not QGIS_PYTHON.exists():
-        raise FileNotFoundError(f"Missing QGIS Python executable: {QGIS_PYTHON}")
     if not output.output_file.exists():
         raise FileNotFoundError(f"Source result raster does not exist: {output.output_file}")
 
@@ -87,20 +83,12 @@ def default_threshold_for(output: ProcessingOutput) -> float | None:
 
 
 def run_mask_script(source: Path, output: Path, threshold: float) -> dict[str, float | int]:
-    command = [
-        str(QGIS_PYTHON),
-        str(MASK_WORKER),
-        str(source),
-        str(output),
-        str(threshold),
-    ]
-    result = subprocess.run(command, capture_output=True, text=True, timeout=180, check=False)
-    if result.returncode != 0 or not output.exists():
-        raise RuntimeError(last_process_message(result))
     try:
-        return json.loads(result.stdout.strip().splitlines()[-1])
-    except (IndexError, json.JSONDecodeError) as exc:
-        raise RuntimeError("Mask was created, but area statistics could not be read.") from exc
+        return mask_worker.compute(str(source), str(output), threshold)
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(f"Mask computation failed: {exc}") from exc
 
 
 def write_mask_manifest(
@@ -178,13 +166,6 @@ def run_dir_for_output(output_file: Path) -> Path:
 
 def threshold_name(threshold: float) -> str:
     return f"{threshold:.3f}".replace("-", "m").replace(".", "p")
-
-
-def last_process_message(result: subprocess.CompletedProcess[str]) -> str:
-    text = (result.stderr or result.stdout or "unknown GDAL mask error").strip()
-    if not text:
-        return f"Mask calculation returned exit code {result.returncode}."
-    return text.splitlines()[-1]
 
 
 def safe_name(value: str) -> str:

@@ -1,26 +1,25 @@
 from __future__ import annotations
 
 import csv
-import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+import numpy as np
+from osgeo import gdal
+
 try:
-    from .config import PREPROCESSED_DIR, QGIS_PYTHON
+    from .config import PREPROCESSED_DIR
 except ImportError:
     import sys
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from glacier_app.config import PREPROCESSED_DIR, QGIS_PYTHON
+    from glacier_app.config import PREPROCESSED_DIR
 
 
 ProgressCallback = Callable[[str], None]
 
-INDEX_NODATA = "-9999"
-INDEX_CALC_EXPRESSION = (
-    "where((A+B)!=0,(A.astype(float)-B.astype(float))/(A.astype(float)+B.astype(float)),-9999)"
-)
+INDEX_NODATA = -9999.0
 
 
 @dataclass(frozen=True)
@@ -72,9 +71,6 @@ BAND_ROLES = {
 
 
 def calculate_run_indexes(run_dir: Path, progress: ProgressCallback | None = None) -> IndexResult:
-    if not QGIS_PYTHON.exists():
-        raise FileNotFoundError(f"Missing QGIS Python executable: {QGIS_PYTHON}")
-
     run_dir = checked_run_dir(run_dir)
     preprocessed_manifest = run_dir / "preprocessed_manifest.csv"
     if not preprocessed_manifest.exists():
@@ -123,15 +119,13 @@ def calculate_run_indexes(run_dir: Path, progress: ProgressCallback | None = Non
                     continue
 
                 emit(progress, f"Calculating {spec.name} for scene {scene_index}/{len(scenes)}: {scene.scene_id}")
-                command = gdal_calc_command(first.path, second.path, output)
-                log_handle.write(command_line_for_log(command) + "\n")
-                result = subprocess.run(command, capture_output=True, text=True, timeout=240, check=False)
-                if result.returncode == 0 and output.exists():
+                try:
+                    compute_index_raster(first.path, second.path, output)
                     index_count += 1
                     writer.writerow(index_row(scene, spec, first, second, output, "ok", ""))
                     emit(progress, f"Created {output.name}")
-                else:
-                    message = last_process_message(result)
+                except Exception as exc:
+                    message = str(exc)
                     writer.writerow(index_row(scene, spec, first, second, output, "failed", message))
                     log_handle.write(f"FAILED {scene.scene_id} {spec.name}: {message}\n")
 
@@ -186,26 +180,40 @@ def checked_run_dir(run_dir: Path) -> Path:
     return target
 
 
-def gdal_calc_command(first_file: Path, second_file: Path, output_file: Path) -> list[str]:
-    return [
-        str(QGIS_PYTHON),
-        "-m",
-        "osgeo_utils.gdal_calc",
-        "-A",
-        str(first_file),
-        "-B",
-        str(second_file),
-        f"--calc={INDEX_CALC_EXPRESSION}",
-        f"--outfile={output_file}",
-        f"--NoDataValue={INDEX_NODATA}",
-        "--type=Float32",
-        "--format=GTiff",
-        "--creation-option=COMPRESS=DEFLATE",
-        "--creation-option=TILED=YES",
-        "--projectionCheck",
-        "--quiet",
-        "--overwrite",
-    ]
+def compute_index_raster(first_file: Path, second_file: Path, output_file: Path) -> None:
+    gdal.UseExceptions()
+    ds_a = gdal.Open(str(first_file))
+    ds_b = gdal.Open(str(second_file))
+    if ds_a is None:
+        raise RuntimeError(f"Could not open raster: {first_file}")
+    if ds_b is None:
+        raise RuntimeError(f"Could not open raster: {second_file}")
+
+    a = ds_a.GetRasterBand(1).ReadAsArray().astype(np.float32)
+    b = ds_b.GetRasterBand(1).ReadAsArray().astype(np.float32)
+    denom = a + b
+    result = np.where(denom != 0, (a - b) / denom, INDEX_NODATA).astype(np.float32)
+
+    driver = gdal.GetDriverByName("GTiff")
+    out_ds = driver.Create(
+        str(output_file),
+        ds_a.RasterXSize,
+        ds_a.RasterYSize,
+        1,
+        gdal.GDT_Float32,
+        options=["COMPRESS=DEFLATE", "TILED=YES"],
+    )
+    if out_ds is None:
+        raise RuntimeError(f"Could not create output raster: {output_file}")
+    out_ds.SetGeoTransform(ds_a.GetGeoTransform())
+    out_ds.SetProjection(ds_a.GetProjection())
+    out_band = out_ds.GetRasterBand(1)
+    out_band.SetNoDataValue(INDEX_NODATA)
+    out_band.WriteArray(result)
+    out_ds.FlushCache()
+    out_ds = None
+    ds_a = None
+    ds_b = None
 
 
 def band_role(label: str) -> str:
@@ -244,17 +252,6 @@ def index_row(
         "status": status,
         "message": message,
     }
-
-
-def last_process_message(result: subprocess.CompletedProcess[str]) -> str:
-    text = (result.stderr or result.stdout or "unknown GDAL calculation error").strip()
-    if not text:
-        return f"GDAL calculation returned exit code {result.returncode}."
-    return text.splitlines()[-1]
-
-
-def command_line_for_log(command: list[str]) -> str:
-    return " ".join(f'"{part}"' if " " in part else part for part in command)
 
 
 def safe_name(value: str) -> str:

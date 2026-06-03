@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 import csv
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from osgeo import gdal
+
 try:
-    from .config import BAND_PREVIEW_CACHE, GDAL_TRANSLATE, PREPROCESSED_DIR
+    from .config import BAND_PREVIEW_CACHE, PREPROCESSED_DIR
 except ImportError:
     import sys
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from glacier_app.config import BAND_PREVIEW_CACHE, GDAL_TRANSLATE, PREPROCESSED_DIR
+    from glacier_app.config import BAND_PREVIEW_CACHE, PREPROCESSED_DIR
 
 
 @dataclass
@@ -129,9 +130,6 @@ def read_preprocessed_outputs(run_dir: Path) -> list[ProcessingOutput]:
 
 
 def processing_preview_png(output: ProcessingOutput) -> Path:
-    if not GDAL_TRANSLATE.exists():
-        raise RuntimeError(f"Cannot create result preview; missing GDAL: {GDAL_TRANSLATE}")
-
     source = output.output_file
     cache_dir = BAND_PREVIEW_CACHE / "processing_results"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -139,29 +137,19 @@ def processing_preview_png(output: ProcessingOutput) -> Path:
     if preview_path.exists() and preview_path.stat().st_mtime >= source.stat().st_mtime:
         return preview_path
 
-    command = [
-        str(GDAL_TRANSLATE),
-        "-of",
-        "PNG",
-        "-ot",
-        "Byte",
-        "-outsize",
-        "1600",
-        "0",
-    ]
     if output.kind == "Index":
-        command.extend(["-scale", "-1", "1", "0", "255"])
+        scale_args = ["-scale", "-1", "1", "0", "255"]
     elif output.kind == "Mask":
-        command.extend(["-scale", "0", "1", "0", "255"])
+        scale_args = ["-scale", "0", "1", "0", "255"]
     else:
-        command.append("-scale")
-    command.extend([str(source), str(preview_path)])
+        scale_args = ["-scale"]
 
-    result = subprocess.run(command, capture_output=True, text=True, timeout=90, check=False)
-    if result.returncode != 0 or not preview_path.exists():
-        details = (result.stderr or result.stdout or "unknown GDAL error").strip().splitlines()
-        message = details[-1] if details else "unknown GDAL error"
-        raise RuntimeError(f"Could not render {output.label} preview: {message}")
+    gdal.UseExceptions()
+    opts = gdal.TranslateOptions(options=["-ot", "Byte", "-outsize", "1600", "0"] + scale_args)
+    ds = gdal.Translate(str(preview_path), str(source), options=opts)
+    if ds is None or not preview_path.exists():
+        raise RuntimeError(f"Could not render {output.label} preview")
+    ds = None
     return preview_path
 
 

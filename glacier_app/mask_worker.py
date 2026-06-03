@@ -7,12 +7,8 @@ import numpy as np
 from osgeo import gdal
 
 
-def main() -> None:
+def compute(source_path: str, output_path: str, threshold: float) -> dict[str, float | int]:
     gdal.UseExceptions()
-
-    source_path = sys.argv[1]
-    output_path = sys.argv[2]
-    threshold = float(sys.argv[3])
 
     source = gdal.Open(source_path)
     if source is None:
@@ -25,7 +21,7 @@ def main() -> None:
     if nodata is not None:
         valid &= array != nodata
 
-    mask = (valid & (array >= threshold)).astype(np.uint8)
+    mask_arr = (valid & (array >= threshold)).astype(np.uint8)
 
     driver = gdal.GetDriverByName("GTiff")
     target = driver.Create(
@@ -41,25 +37,26 @@ def main() -> None:
 
     target.SetGeoTransform(source.GetGeoTransform())
     target.SetProjection(source.GetProjection())
-    target.GetRasterBand(1).WriteArray(mask)
+    target.GetRasterBand(1).WriteArray(mask_arr)
     target.FlushCache()
 
     geotransform = source.GetGeoTransform()
     pixel_area_m2 = abs(geotransform[1] * geotransform[5] - geotransform[2] * geotransform[4])
-    mask_pixels = int(mask.sum())
+    mask_pixels = int(mask_arr.sum())
     valid_pixels = int(valid.sum())
 
-    print(
-        json.dumps(
-            {
-                "pixel_area_m2": pixel_area_m2,
-                "mask_pixels": mask_pixels,
-                "valid_pixels": valid_pixels,
-                "area_m2": mask_pixels * pixel_area_m2,
-                "area_km2": mask_pixels * pixel_area_m2 / 1_000_000,
-            }
-        )
-    )
+    return {
+        "pixel_area_m2": pixel_area_m2,
+        "mask_pixels": mask_pixels,
+        "valid_pixels": valid_pixels,
+        "area_m2": mask_pixels * pixel_area_m2,
+        "area_km2": mask_pixels * pixel_area_m2 / 1_000_000,
+    }
+
+
+def main() -> None:
+    stats = compute(sys.argv[1], sys.argv[2], float(sys.argv[3]))
+    print(json.dumps(stats))
 
 
 if __name__ == "__main__":

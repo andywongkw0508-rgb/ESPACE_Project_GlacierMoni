@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
-from .config import BAND_PREVIEW_CACHE, DATA_ROOT, GDAL_TRANSLATE, LANDSAT_BANDS, SENTINEL_BANDS
+from osgeo import gdal
+
+from .config import BAND_PREVIEW_CACHE, DATA_ROOT, LANDSAT_BANDS, SENTINEL_BANDS
 
 
 def available_band_labels(row: dict[str, str]) -> list[str]:
@@ -90,30 +91,16 @@ def scene_file_patterns(row: dict[str, str]) -> list[str]:
 
 
 def band_preview_png(tif_path: Path, label: str) -> Path:
-    if not GDAL_TRANSLATE.exists():
-        raise RuntimeError(f"Cannot create band preview; missing GDAL: {GDAL_TRANSLATE}")
     BAND_PREVIEW_CACHE.mkdir(parents=True, exist_ok=True)
     safe_label = "".join(char if char.isalnum() else "_" for char in label).strip("_")
     preview_path = BAND_PREVIEW_CACHE / f"{tif_path.stem}_{safe_label}.png"
     if preview_path.exists() and preview_path.stat().st_mtime >= tif_path.stat().st_mtime:
         return preview_path
 
-    command = [
-        str(GDAL_TRANSLATE),
-        "-of",
-        "PNG",
-        "-ot",
-        "Byte",
-        "-outsize",
-        "1600",
-        "0",
-        "-scale",
-        str(tif_path),
-        str(preview_path),
-    ]
-    result = subprocess.run(command, capture_output=True, text=True, timeout=60, check=False)
-    if result.returncode != 0 or not preview_path.exists():
-        details = (result.stderr or result.stdout or "unknown GDAL error").strip().splitlines()
-        message = details[-1] if details else "unknown GDAL error"
-        raise RuntimeError(f"Could not render {label} preview: {message}")
+    gdal.UseExceptions()
+    opts = gdal.TranslateOptions(options=["-ot", "Byte", "-outsize", "1600", "0", "-scale"])
+    ds = gdal.Translate(str(preview_path), str(tif_path), options=opts)
+    if ds is None or not preview_path.exists():
+        raise RuntimeError(f"Could not render {label} preview")
+    ds = None
     return preview_path

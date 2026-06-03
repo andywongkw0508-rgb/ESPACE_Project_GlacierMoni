@@ -1,26 +1,33 @@
-# Python
+# Python bytecode
 __pycache__/
 *.py[cod]
+
+# Virtual environments
 .venv/
 venv/
 
-# IDE and local tooling
+# Local machine-specific config (paths, secrets)
+.env
+
+# IDE
 .idea/
-tools/
+.vscode/
 
-# Large or generated project data
-data/
-output/
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Generated outputs (large rasters, band preview PNGs, machine-specific paths)
+outputs/
+
+# Temporary files
 tmp/
-docx_render_check/
-pdf_pages/
 
-# Generated interface outputs
-project coding/outputs/
-project coding/assets/
-project coding/logs/
-project coding/notebooks/.ipynb_checkpoints/
-
-# Office/report artifacts kept outside source control by default
+# Report artifacts
 *.docx
 *.pdf
+
+# Tool-specific
+*.codex
+*.claude
+tools/
