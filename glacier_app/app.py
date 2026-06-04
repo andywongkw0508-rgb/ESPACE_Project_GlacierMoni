@@ -72,6 +72,8 @@ class ImageryApp(tk.Tk):
         self.sentinel_resolution_var = tk.StringVar(value=DEFAULT_SENTINEL_PREPROCESS_RESOLUTION)
         self.mask_threshold_var = tk.StringVar(value="0.40")
         self.mask_stats_var = tk.StringVar(value="")
+        self._workflow_step = 0
+        self._step_labels: list[ttk.Label] = []
 
         self.configure_style()
         self.build_layout()
@@ -179,6 +181,11 @@ class ImageryApp(tk.Tk):
             background=_C_SIDEBAR, troughcolor=_C_SIDEBAR_F,
             darkcolor=_C_SIDEBAR_BD, lightcolor=_C_SIDEBAR_BD)
 
+        # step bar
+        s.configure("Step.Active.TLabel",   background=_C_CARD, foreground=_C_ACCENT, font=(_UI_FONT, 9, "bold"))
+        s.configure("Step.Done.TLabel",     background=_C_CARD, foreground=_C_TEXT,   font=(_UI_FONT, 9))
+        s.configure("Step.Inactive.TLabel", background=_C_CARD, foreground=_C_MUTED,  font=(_UI_FONT, 9))
+
         # notebook
         s.configure("TNotebook",     background=_C_CARD, bordercolor=_C_BORDER)
         s.configure("TNotebook.Tab", background="#e8eef0", foreground=_C_MUTED,
@@ -226,8 +233,8 @@ class ImageryApp(tk.Tk):
         body.pack(fill="both", expand=True)
 
         self.build_filters(body)
-        self.build_table(body)
-        self.build_details(body)
+        self.build_preview_panel(body)
+        self.build_workflow_panel(body)
 
         status_bar = ttk.Frame(self, style="TFrame")
         status_bar.pack(fill="x", side="bottom")
@@ -283,168 +290,28 @@ class ImageryApp(tk.Tk):
         self.metric_total.pack(anchor="w")
         ttk.Label(panel, text="matching scenes", style="Sidebar.Muted.TLabel").pack(anchor="w")
 
-        self.build_run_manager(panel)
-
-    def build_run_manager(self, parent: ttk.Frame) -> None:
-        ttk.Separator(parent, style="Sidebar.TSeparator").pack(fill="x", pady=14)
-        ttk.Label(parent, text="Preprocessing Runs", style="Sidebar.Sub.TLabel").pack(anchor="w")
-        ttk.Label(
-            parent,
-            text="Select a run to calculate indexes, load results, or delete.",
-            style="Sidebar.Muted.TLabel",
-            wraplength=212,
-        ).pack(anchor="w", pady=(3, 8))
-
-        columns = ("run", "rasters", "modified")
-        self.runs_tree = ttk.Treeview(
-            parent, columns=columns, show="headings", height=3,
-            style="Sidebar.Treeview", selectmode="extended",
-        )
-        for column, heading, width in (
-            ("run",      "Run",      106),
-            ("rasters",  "Files",     36),
-            ("modified", "Modified",  76),
-        ):
-            self.runs_tree.heading(column, text=heading)
-            self.runs_tree.column(column, width=width, anchor="w", stretch=column == "run")
-        self.runs_tree.pack(fill="x")
-
-        btn_frame = ttk.Frame(parent, style="Sidebar.TFrame")
-        btn_frame.pack(fill="x", pady=(8, 0))
-        btn_frame.columnconfigure(0, weight=1)
-        btn_frame.columnconfigure(1, weight=1)
-
-        ttk.Button(btn_frame, text="Refresh", style="Sidebar.TButton",
-                   command=self.refresh_preprocess_runs).grid(row=0, column=0, sticky="ew", padx=(0, 4), pady=(0, 4))
-        ttk.Button(btn_frame, text="Delete", style="Sidebar.TButton",
-                   command=self.delete_selected_preprocess_run).grid(row=0, column=1, sticky="ew", pady=(0, 4))
-
-        self.index_button = ttk.Button(
-            btn_frame, text="Calculate Indexes",
-            style="SidebarAccent.TButton",
-            command=self.calculate_selected_indexes,
-        )
-        self.index_button.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 4))
-
-        ttk.Button(btn_frame, text="Load Results", style="Sidebar.TButton",
-                   command=self.load_selected_processing_results).grid(
-            row=2, column=0, columnspan=2, sticky="ew"
-        )
-        self.refresh_preprocess_runs()
-
-    def build_table(self, parent: ttk.PanedWindow) -> None:
+    def build_preview_panel(self, parent: ttk.PanedWindow) -> None:
         panel = ttk.Frame(parent, style="Card.TFrame", padding=14)
-        parent.add(panel, weight=1)
+        parent.add(panel, weight=2)
         panel.rowconfigure(1, weight=1)
         panel.columnconfigure(0, weight=1)
 
-        table_header = ttk.Frame(panel, style="Card.TFrame")
-        table_header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
-        table_header.columnconfigure(0, weight=1)
-        ttk.Label(table_header, text="Scene Inventory", style="Card.TLabel",
-                  font=(_UI_FONT, 13, "bold")).grid(row=0, column=0, sticky="w")
-        ttk.Button(table_header, text="+ Add to Basket",
-                   style="Accent.TButton",
-                   command=self.add_selected_scene_to_basket).grid(row=0, column=1, sticky="e")
-
-        columns = ("date", "sensor", "cloud", "platform", "tile")
-        self.tree = ttk.Treeview(panel, columns=columns, show="headings", selectmode="browse")
-        headings = {"date": "Date", "sensor": "Sensor", "cloud": "Cloud %",
-                    "platform": "Platform", "tile": "Tile / Path"}
-        widths = {"date": 110, "sensor": 110, "cloud": 74, "platform": 112, "tile": 100}
-        for column in columns:
-            self.tree.heading(column, text=headings[column])
-            self.tree.column(column, width=widths[column], anchor="w", stretch=column in {"sensor", "platform"})
-        self.tree.tag_configure("odd", background=_C_TREE_ALT)
-
-        scrollbar = ttk.Scrollbar(panel, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scrollbar.set)
-        self.tree.grid(row=1, column=0, sticky="nsew")
-        scrollbar.grid(row=1, column=1, sticky="ns")
-        self.tree.bind("<<TreeviewSelect>>", self.on_scene_selected)
-        self.tree.bind("<Double-1>", lambda _event: self.add_selected_scene_to_basket())
-
-        self.build_basket(panel)
-
-    def build_basket(self, parent: ttk.Frame) -> None:
-        basket_panel = ttk.Frame(parent, style="Card.TFrame", padding=(0, 14, 0, 0))
-        basket_panel.grid(row=2, column=0, columnspan=2, sticky="ew")
-        basket_panel.columnconfigure(0, weight=1)
-
-        bk_header = ttk.Frame(basket_panel, style="Card.TFrame")
-        bk_header.grid(row=0, column=0, sticky="ew", pady=(0, 8))
-        bk_header.columnconfigure(0, weight=1)
-        self.basket_label = ttk.Label(
-            bk_header, text="Scene Selection Basket (0)",
-            style="Card.TLabel", font=(_UI_FONT, 12, "bold"),
-        )
-        self.basket_label.grid(row=0, column=0, sticky="w")
-
-        # Controls row: resolution + remove/clear/export
-        controls = ttk.Frame(basket_panel, style="Card.TFrame")
-        controls.grid(row=1, column=0, sticky="ew", pady=(0, 6))
-        controls.columnconfigure(4, weight=1)
-        ttk.Label(controls, text="Sentinel res. (m)", style="Card.Muted.TLabel").grid(row=0, column=0, padx=(0, 4))
-        self.sentinel_resolution_combo = ttk.Combobox(
-            controls,
-            textvariable=self.sentinel_resolution_var,
-            values=SENTINEL_PREPROCESS_RESOLUTIONS,
-            state="readonly",
-            width=4,
-        )
-        self.sentinel_resolution_combo.grid(row=0, column=1, padx=(0, 12))
-        ttk.Button(controls, text="Remove", command=self.remove_selected_basket_scene).grid(
-            row=0, column=2, padx=(0, 4))
-        ttk.Button(controls, text="Clear", command=self.clear_basket).grid(row=0, column=3, padx=(0, 4))
-        ttk.Button(controls, text="Export CSV", command=self.export_basket_csv).grid(row=0, column=4, sticky="e")
-
-        # Run Preprocessing — full-width accent button
-        self.preprocess_button = ttk.Button(
-            basket_panel, text="▶  Run Preprocessing",
-            style="Accent.TButton",
-            command=self.run_preprocessing,
-        )
-        self.preprocess_button.grid(row=2, column=0, sticky="ew", pady=(0, 8))
-
-        basket_columns = ("date", "sensor", "cloud", "item")
-        self.basket_tree = ttk.Treeview(basket_panel, columns=basket_columns, show="headings",
-                                        height=4, selectmode="browse")
-        for column, heading, width in (
-            ("date",   "Date",     90),
-            ("sensor", "Sensor",  108),
-            ("cloud",  "Cloud %",  70),
-            ("item",   "Scene ID", 300),
-        ):
-            self.basket_tree.heading(column, text=heading)
-            self.basket_tree.column(column, width=width, anchor="w", stretch=column == "item")
-        self.basket_tree.tag_configure("odd", background=_C_TREE_ALT)
-        self.basket_tree.grid(row=3, column=0, sticky="ew")
-        self.basket_tree.bind("<Double-1>", self.focus_basket_scene)
-
-    def build_details(self, parent: ttk.PanedWindow) -> None:
-        panel = ttk.Frame(parent, style="Card.TFrame", padding=14)
-        parent.add(panel, weight=1)
-        panel.rowconfigure(1, weight=1)
-        panel.columnconfigure(0, weight=1)
-
-        ttk.Label(panel, text="Preview", style="Card.TLabel",
-                  font=(_UI_FONT, 13, "bold")).grid(row=0, column=0, sticky="w")
+        self._build_step_bar(panel)  # row=0
 
         viewer = ttk.Frame(panel, style="Card.TFrame")
-        viewer.grid(row=1, column=0, sticky="nsew", pady=(10, 8))
+        viewer.grid(row=1, column=0, sticky="nsew", pady=(8, 6))
         viewer.rowconfigure(0, weight=1)
         viewer.columnconfigure(0, weight=1)
 
         self.preview_canvas = tk.Canvas(
-            viewer, width=520, height=380,
-            bg="#c6d9e0",
+            viewer, bg="#c6d9e0",
             highlightthickness=1, highlightbackground=_C_BORDER,
             cursor="fleur",
         )
         self.preview_canvas.grid(row=0, column=0, sticky="nsew")
 
         zoom_bar = ttk.Frame(panel, style="Card.TFrame")
-        zoom_bar.grid(row=2, column=0, sticky="ew", pady=(0, 10))
+        zoom_bar.grid(row=2, column=0, sticky="ew", pady=(0, 8))
         zoom_bar.columnconfigure(3, weight=1)
         ttk.Button(zoom_bar, text="−", width=3, command=lambda: self.preview.zoom_by(-1)).grid(
             row=0, column=0, padx=(0, 4))
@@ -464,85 +331,225 @@ class ImageryApp(tk.Tk):
         self.preview_canvas.bind("<Configure>", lambda _event: self.preview.center_if_needed())
 
         self.preview_tabs = ttk.Notebook(panel)
-        self.preview_tabs.grid(row=3, column=0, sticky="ew", pady=(0, 10))
+        self.preview_tabs.grid(row=3, column=0, sticky="ew")
 
-        # Bands tab
         band_panel = ttk.Frame(self.preview_tabs, style="Card.TFrame", padding=8)
         self.preview_tabs.add(band_panel, text="  Bands  ")
         band_panel.columnconfigure(0, weight=1)
         ttk.Label(band_panel, text="Band Checker", style="Card.TLabel",
-                  font=(_UI_FONT, 11, "bold")).grid(row=0, column=0, sticky="w")
-        ttk.Label(band_panel, text="Select a row to preview that band.",
-                  style="Card.Muted.TLabel").grid(row=1, column=0, sticky="w", pady=(2, 6))
-
+                  font=(_UI_FONT, 10, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 4))
         band_columns = ("band", "disk", "manifest", "file")
         self.band_tree = ttk.Treeview(band_panel, columns=band_columns, show="headings",
-                                      height=6, selectmode="browse")
-        for column, heading, width in (
-            ("band",     "Band",          86),
-            ("disk",     "File",          60),
-            ("manifest", "URL",           60),
-            ("file",     "Matched file", 290),
+                                      height=4, selectmode="browse")
+        for col, heading, width in (
+            ("band",     "Band",         80),
+            ("disk",     "File",         50),
+            ("manifest", "URL",          50),
+            ("file",     "Matched file", 260),
         ):
-            self.band_tree.heading(column, text=heading)
-            self.band_tree.column(column, width=width, anchor="w", stretch=column == "file")
+            self.band_tree.heading(col, text=heading)
+            self.band_tree.column(col, width=width, anchor="w", stretch=col == "file")
         self.band_tree.tag_configure("odd", background=_C_TREE_ALT)
-        self.band_tree.grid(row=2, column=0, sticky="ew")
+        self.band_tree.grid(row=1, column=0, sticky="ew")
         self.band_tree.bind("<<TreeviewSelect>>", self.on_band_selected)
 
-        # Processing Results tab
         results_panel = ttk.Frame(self.preview_tabs, style="Card.TFrame", padding=8)
         self.preview_tabs.add(results_panel, text="  Results  ")
         results_panel.columnconfigure(0, weight=1)
         ttk.Label(results_panel, text="Processing Results", style="Card.TLabel",
-                  font=(_UI_FONT, 11, "bold")).grid(row=0, column=0, sticky="w")
-        ttk.Label(results_panel, text="Select a row to preview that result.",
-                  style="Card.Muted.TLabel").grid(row=1, column=0, sticky="w", pady=(2, 6))
-
+                  font=(_UI_FONT, 10, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 4))
         result_columns = ("run", "type", "result", "scene")
         self.result_tree = ttk.Treeview(results_panel, columns=result_columns, show="headings",
-                                        height=6, selectmode="browse")
-        for column, heading, width in (
-            ("run",    "Run",      110),
-            ("type",   "Type",      90),
-            ("result", "Result",    76),
-            ("scene",  "Scene ID", 275),
+                                        height=4, selectmode="browse")
+        for col, heading, width in (
+            ("run",    "Run",      100),
+            ("type",   "Type",      80),
+            ("result", "Result",    70),
+            ("scene",  "Scene ID", 260),
         ):
-            self.result_tree.heading(column, text=heading)
-            self.result_tree.column(column, width=width, anchor="w", stretch=column == "scene")
+            self.result_tree.heading(col, text=heading)
+            self.result_tree.column(col, width=width, anchor="w", stretch=col == "scene")
         self.result_tree.tag_configure("odd", background=_C_TREE_ALT)
-        self.result_tree.grid(row=2, column=0, sticky="ew")
+        self.result_tree.grid(row=1, column=0, sticky="ew")
         self.result_tree.bind("<<TreeviewSelect>>", self.on_processing_result_selected)
 
         mask_bar = ttk.Frame(results_panel, style="Card.TFrame")
-        mask_bar.grid(row=3, column=0, sticky="ew", pady=(8, 0))
-        mask_bar.columnconfigure(3, weight=1)
+        mask_bar.grid(row=2, column=0, sticky="ew", pady=(6, 0))
+        mask_bar.columnconfigure(2, weight=1)
         ttk.Label(mask_bar, text="Threshold ≥", style="Card.Muted.TLabel").grid(row=0, column=0, padx=(0, 4))
-        ttk.Entry(mask_bar, textvariable=self.mask_threshold_var, width=7).grid(row=0, column=1, padx=(0, 6))
-        self.mask_button = ttk.Button(mask_bar, text="Build Mask",
-                                      style="Accent.TButton", command=self.build_selected_mask)
-        self.mask_button.grid(row=0, column=2, padx=(0, 10))
+        ttk.Entry(mask_bar, textvariable=self.mask_threshold_var, width=7).grid(row=0, column=1, padx=(0, 10))
         ttk.Label(mask_bar, textvariable=self.mask_stats_var, style="Card.Muted.TLabel").grid(
-            row=0, column=3, sticky="w")
+            row=0, column=2, sticky="w")
+        self.mask_button = ttk.Button(mask_bar, text="▶  Build Mask",
+                                      style="Accent.TButton", command=self.build_selected_mask)
+        self.mask_button.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(6, 0))
 
-        self.detail_text = tk.Text(
-            panel, height=8, wrap="word",
-            borderwidth=1, relief="solid",
-            bg="#f8fcfd", fg=_C_TEXT,
-            font=(_MONO_FONT, 9),
-            selectbackground=_C_ACCENT, selectforeground="white",
+    def _build_step_bar(self, parent: ttk.Frame) -> None:
+        frame = ttk.Frame(parent, style="Card.TFrame")
+        frame.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 10))
+        steps = ["① Filter", "② Select", "③ Preprocess", "④ Analyse"]
+        for i, text in enumerate(steps):
+            lbl = ttk.Label(frame, text=text, style="Step.Inactive.TLabel", padding=(6, 3))
+            lbl.pack(side="left")
+            self._step_labels.append(lbl)
+            if i < len(steps) - 1:
+                ttk.Label(frame, text="→", style="Step.Inactive.TLabel").pack(side="left")
+        self._update_step_bar()
+
+    def _update_step_bar(self) -> None:
+        for i, lbl in enumerate(self._step_labels):
+            if i < self._workflow_step:
+                lbl.configure(style="Step.Done.TLabel")
+            elif i == self._workflow_step:
+                lbl.configure(style="Step.Active.TLabel")
+            else:
+                lbl.configure(style="Step.Inactive.TLabel")
+
+    def _advance_step(self, step: int) -> None:
+        if step > self._workflow_step:
+            self._workflow_step = step
+            self._update_step_bar()
+
+    def _on_run_selected(self, _event: tk.Event) -> None:
+        pass
+
+    def _show_inventory_context_menu(self, event: tk.Event) -> None:
+        iid = self.tree.identify_row(event.y)
+        if not iid:
+            return
+        self.tree.selection_set(iid)
+        self.tree.focus(iid)
+        self.show_scene(self.filtered_rows[int(iid)])
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="Add to Basket", command=self.add_selected_scene_to_basket)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def build_workflow_panel(self, parent: ttk.PanedWindow) -> None:
+        panel = ttk.Frame(parent, style="Card.TFrame", padding=14)
+        parent.add(panel, weight=1)
+        panel.columnconfigure(0, weight=1)
+
+        # ── Scene Inventory ──────────────────────────────────────
+        inv_header = ttk.Frame(panel, style="Card.TFrame")
+        inv_header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        inv_header.columnconfigure(0, weight=1)
+        ttk.Label(inv_header, text="Scene Inventory", style="Card.TLabel",
+                  font=(_UI_FONT, 12, "bold")).grid(row=0, column=0, sticky="w")
+        ttk.Button(inv_header, text="+ Add to Basket", style="Accent.TButton",
+                   command=self.add_selected_scene_to_basket).grid(row=0, column=1, sticky="e")
+
+        inv_columns = ("date", "sensor", "cloud", "platform", "tile")
+        self.tree = ttk.Treeview(panel, columns=inv_columns, show="headings",
+                                 height=7, selectmode="browse")
+        inv_headings = {"date": "Date", "sensor": "Sensor", "cloud": "Cloud %",
+                        "platform": "Platform", "tile": "Tile / Path"}
+        inv_widths = {"date": 100, "sensor": 100, "cloud": 64, "platform": 86, "tile": 78}
+        for col in inv_columns:
+            self.tree.heading(col, text=inv_headings[col])
+            self.tree.column(col, width=inv_widths[col], anchor="w",
+                             stretch=col in {"sensor", "platform"})
+        self.tree.tag_configure("odd", background=_C_TREE_ALT)
+        inv_scroll = ttk.Scrollbar(panel, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=inv_scroll.set)
+        self.tree.grid(row=1, column=0, sticky="ew")
+        inv_scroll.grid(row=1, column=1, sticky="ns")
+        self.tree.bind("<<TreeviewSelect>>", self.on_scene_selected)
+        self.tree.bind("<Double-1>", lambda _event: self.add_selected_scene_to_basket())
+        self.tree.bind("<Button-2>", self._show_inventory_context_menu)
+        self.tree.bind("<Button-3>", self._show_inventory_context_menu)
+
+        ttk.Separator(panel).grid(row=2, column=0, columnspan=2, sticky="ew", pady=8)
+
+        # ── Scene Selection Basket + Preprocessing ───────────────
+        bk_header = ttk.Frame(panel, style="Card.TFrame")
+        bk_header.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        bk_header.columnconfigure(0, weight=1)
+        self.basket_label = ttk.Label(
+            bk_header, text="Scene Selection Basket (0)",
+            style="Card.TLabel", font=(_UI_FONT, 11, "bold"),
         )
-        self.detail_text.grid(row=4, column=0, sticky="nsew")
-        self.detail_text.configure(state="disabled")
+        self.basket_label.grid(row=0, column=0, sticky="w")
 
-        actions = ttk.Frame(panel, style="Card.TFrame")
-        actions.grid(row=5, column=0, sticky="ew", pady=(10, 0))
-        actions.columnconfigure(0, weight=1)
-        actions.columnconfigure(1, weight=1)
-        ttk.Button(actions, text="Copy Scene ID",
-                   command=self.copy_selected_scene_id).grid(row=0, column=0, sticky="ew", padx=(0, 6))
-        ttk.Button(actions, text="Copy Preview Path",
-                   command=self.copy_selected_preview_path).grid(row=0, column=1, sticky="ew")
+        bk_controls = ttk.Frame(panel, style="Card.TFrame")
+        bk_controls.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        bk_controls.columnconfigure(4, weight=1)
+        ttk.Label(bk_controls, text="Sentinel res. (m)", style="Card.Muted.TLabel").grid(
+            row=0, column=0, padx=(0, 4))
+        self.sentinel_resolution_combo = ttk.Combobox(
+            bk_controls, textvariable=self.sentinel_resolution_var,
+            values=SENTINEL_PREPROCESS_RESOLUTIONS, state="readonly", width=4,
+        )
+        self.sentinel_resolution_combo.grid(row=0, column=1, padx=(0, 12))
+        ttk.Button(bk_controls, text="Remove", command=self.remove_selected_basket_scene).grid(
+            row=0, column=2, padx=(0, 4))
+        ttk.Button(bk_controls, text="Clear", command=self.clear_basket).grid(
+            row=0, column=3, padx=(0, 4))
+        ttk.Button(bk_controls, text="Export CSV", command=self.export_basket_csv).grid(
+            row=0, column=4, sticky="e")
+
+        self.preprocess_button = ttk.Button(
+            panel, text="▶  Run Preprocessing", style="Accent.TButton",
+            command=self.run_preprocessing,
+        )
+        self.preprocess_button.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+
+        bk_columns = ("date", "sensor", "cloud", "item")
+        self.basket_tree = ttk.Treeview(panel, columns=bk_columns, show="headings",
+                                        height=3, selectmode="browse")
+        for col, heading, width in (
+            ("date",   "Date",     88),
+            ("sensor", "Sensor",  100),
+            ("cloud",  "Cloud %",  64),
+            ("item",   "Scene ID", 234),
+        ):
+            self.basket_tree.heading(col, text=heading)
+            self.basket_tree.column(col, width=width, anchor="w", stretch=col == "item")
+        self.basket_tree.tag_configure("odd", background=_C_TREE_ALT)
+        self.basket_tree.grid(row=6, column=0, columnspan=2, sticky="ew")
+        self.basket_tree.bind("<Double-1>", self.focus_basket_scene)
+
+        ttk.Separator(panel).grid(row=7, column=0, columnspan=2, sticky="ew", pady=8)
+
+        # ── Pipeline Runs ─────────────────────────────────────────
+        ttk.Label(panel, text="Pipeline Runs", style="Card.TLabel",
+                  font=(_UI_FONT, 11, "bold")).grid(
+            row=8, column=0, columnspan=2, sticky="w", pady=(0, 6))
+
+        run_columns = ("run", "rasters", "modified")
+        self.runs_tree = ttk.Treeview(
+            panel, columns=run_columns, show="headings", height=3, selectmode="extended",
+        )
+        for col, heading, width in (
+            ("run",      "Run",      188),
+            ("rasters",  "Files",     42),
+            ("modified", "Modified", 104),
+        ):
+            self.runs_tree.heading(col, text=heading)
+            self.runs_tree.column(col, width=width, anchor="w", stretch=col == "run")
+        self.runs_tree.tag_configure("odd", background=_C_TREE_ALT)
+        self.runs_tree.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        self.runs_tree.bind("<<TreeviewSelect>>", self._on_run_selected)
+
+        run_btns = ttk.Frame(panel, style="Card.TFrame")
+        run_btns.grid(row=10, column=0, columnspan=2, sticky="ew")
+        run_btns.columnconfigure(0, weight=1)
+        run_btns.columnconfigure(1, weight=1)
+        ttk.Button(run_btns, text="Refresh", command=self.refresh_preprocess_runs).grid(
+            row=0, column=0, sticky="ew", padx=(0, 4), pady=(0, 4))
+        ttk.Button(run_btns, text="Delete", command=self.delete_selected_preprocess_run).grid(
+            row=0, column=1, sticky="ew", pady=(0, 4))
+        self.index_button = ttk.Button(
+            run_btns, text="Calculate Indexes",
+            style="Accent.TButton", command=self.calculate_selected_indexes,
+        )
+        self.index_button.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 4))
+        ttk.Button(run_btns, text="Load Results", command=self.load_selected_processing_results).grid(
+            row=2, column=0, columnspan=2, sticky="ew")
+
+        self.refresh_preprocess_runs()
 
     def add_combo(
         self,
@@ -624,10 +631,7 @@ class ImageryApp(tk.Tk):
         self.show_details_text(self.scene_details(row))
 
     def show_details_text(self, text: str) -> None:
-        self.detail_text.configure(state="normal")
-        self.detail_text.delete("1.0", "end")
-        self.detail_text.insert("1.0", text)
-        self.detail_text.configure(state="disabled")
+        pass
 
     def scene_details(self, row: dict[str, str]) -> str:
         fields = [
@@ -663,7 +667,7 @@ class ImageryApp(tk.Tk):
                     check["label"],
                     "Yes" if check["disk_exists"] else "No",
                     "Yes" if check["manifest_url"] else "No",
-                    check["matched_file"],
+                    Path(str(check["matched_file"])).name if check["matched_file"] else "",
                 ),
             )
         self.status_var.set(
@@ -690,7 +694,7 @@ class ImageryApp(tk.Tk):
             self.status_var.set(str(exc))
             return
         self.preview.show_image(str(preview_path), preserve_view=True)
-        self.status_var.set(f"Showing {check.get('label', 'band')} band preview.")
+        self.status_var.set(f"Showing {check.get('label', 'band')} — {band_path}")
 
     def selected_row(self) -> dict[str, str] | None:
         selection = self.tree.selection()
@@ -710,6 +714,7 @@ class ImageryApp(tk.Tk):
         self.basket_rows[item_id] = row
         self.refresh_basket()
         self.status_var.set(f"Added scene to basket: {item_id}")
+        self._advance_step(1)
 
     def refresh_basket(self) -> None:
         self.basket_tree.delete(*self.basket_tree.get_children())
@@ -822,6 +827,7 @@ class ImageryApp(tk.Tk):
         rows = sorted(self.basket_rows.values(), key=lambda item: (item.get("date", ""), item.get("sensor", "")))
         sentinel_resolution = self.sentinel_resolution_var.get()
         self.preprocess_button.configure(state="disabled")
+        self._advance_step(2)
         self.status_var.set(
             f"Starting preprocessing for {len(rows)} scene(s). Sentinel: {sentinel_resolution} m; Landsat: 30 m."
         )
@@ -852,7 +858,8 @@ class ImageryApp(tk.Tk):
             f"Preprocessed {result.raster_count} raster(s) from {result.scene_count} scene(s). "
             f"Run folder: {result.run_dir}"
         )
-        self.refresh_preprocess_runs()
+        self.refresh_preprocess_runs(select_path=result.run_dir)
+        self.load_processing_results_for_paths([result.run_dir])
         messagebox.showinfo(
             "Preprocessing complete",
             f"Rasters written: {result.raster_count}\n"
@@ -862,7 +869,7 @@ class ImageryApp(tk.Tk):
             f"Log:\n{result.log_file}",
         )
 
-    def refresh_preprocess_runs(self) -> None:
+    def refresh_preprocess_runs(self, select_path: Path | None = None) -> None:
         if not hasattr(self, "runs_tree"):
             return
         self.runs_tree.delete(*self.runs_tree.get_children())
@@ -878,6 +885,12 @@ class ImageryApp(tk.Tk):
                     run["modified"],
                 ),
             )
+        if select_path is not None:
+            iid = str(select_path)
+            if self.runs_tree.exists(iid):
+                self.runs_tree.selection_set(iid)
+                self.runs_tree.focus(iid)
+                self.runs_tree.see(iid)
 
     def selected_preprocess_run_paths(self) -> list[Path]:
         return [Path(item_id) for item_id in self.runs_tree.selection()]
@@ -994,6 +1007,7 @@ class ImageryApp(tk.Tk):
         self.current_processing_outputs = outputs
         self.refresh_processing_results(selected_output)
         self.preview_tabs.select(1)
+        self._advance_step(3)
         if outputs:
             self.status_var.set(f"Loaded {len(outputs)} processing result raster(s).")
         else:

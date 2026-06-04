@@ -138,19 +138,63 @@ def processing_preview_png(output: ProcessingOutput) -> Path:
         return preview_path
 
     if output.kind == "Index":
-        scale_args = ["-scale", "-1", "1", "0", "255"]
+        _render_index_png(source, preview_path)
     elif output.kind == "Mask":
-        scale_args = ["-scale", "0", "1", "0", "255"]
+        gdal.UseExceptions()
+        opts = gdal.TranslateOptions(options=["-ot", "Byte", "-outsize", "1600", "0", "-scale", "0", "1", "0", "255"])
+        ds = gdal.Translate(str(preview_path), str(source), options=opts)
+        if ds is None or not preview_path.exists():
+            raise RuntimeError(f"Could not render {output.label} preview")
+        ds = None
     else:
-        scale_args = ["-scale"]
+        gdal.UseExceptions()
+        opts = gdal.TranslateOptions(options=["-ot", "Byte", "-outsize", "1600", "0", "-scale"])
+        ds = gdal.Translate(str(preview_path), str(source), options=opts)
+        if ds is None or not preview_path.exists():
+            raise RuntimeError(f"Could not render {output.label} preview")
+        ds = None
+    return preview_path
+
+
+def _render_index_png(source: Path, preview_path: Path) -> None:
+    import numpy as np
 
     gdal.UseExceptions()
-    opts = gdal.TranslateOptions(options=["-ot", "Byte", "-outsize", "1600", "0"] + scale_args)
-    ds = gdal.Translate(str(preview_path), str(source), options=opts)
-    if ds is None or not preview_path.exists():
-        raise RuntimeError(f"Could not render {output.label} preview")
+    ds = gdal.Open(str(source))
+    if ds is None:
+        raise RuntimeError(f"Cannot open {source}")
+
+    full_w, full_h = ds.RasterXSize, ds.RasterYSize
+    scale = min(1.0, 1600.0 / full_w)
+    out_w = max(1, int(round(full_w * scale)))
+    out_h = max(1, int(round(full_h * scale)))
+
+    band = ds.GetRasterBand(1)
+    data = band.ReadAsArray(buf_xsize=out_w, buf_ysize=out_h).astype(np.float32)
+    nodata_val = band.GetNoDataValue()
     ds = None
-    return preview_path
+
+    valid = np.ones(data.shape, dtype=bool)
+    if nodata_val is not None:
+        valid &= ~np.isclose(data, np.float32(nodata_val))
+
+    grey = np.clip((data + 1.0) / 2.0 * 255.0, 0, 255).astype(np.uint8)
+    alpha = np.where(valid, np.uint8(255), np.uint8(0))
+
+    mem_drv = gdal.GetDriverByName("MEM")
+    mem_ds = mem_drv.Create("", out_w, out_h, 4, gdal.GDT_Byte)
+    for i, arr in enumerate([grey, grey, grey, alpha], start=1):
+        mem_ds.GetRasterBand(i).WriteArray(arr)
+    from osgeo.gdalconst import GCI_RedBand, GCI_GreenBand, GCI_BlueBand, GCI_AlphaBand
+    mem_ds.GetRasterBand(1).SetColorInterpretation(GCI_RedBand)
+    mem_ds.GetRasterBand(2).SetColorInterpretation(GCI_GreenBand)
+    mem_ds.GetRasterBand(3).SetColorInterpretation(GCI_BlueBand)
+    mem_ds.GetRasterBand(4).SetColorInterpretation(GCI_AlphaBand)
+
+    png_drv = gdal.GetDriverByName("PNG")
+    out_ds = png_drv.CreateCopy(str(preview_path), mem_ds)
+    out_ds = None
+    mem_ds = None
 
 
 def existing_output_path(value: str) -> Path | None:
