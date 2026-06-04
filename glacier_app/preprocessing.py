@@ -184,6 +184,8 @@ def gdal_warp(
         yRes=resolution,
         targetAlignedPixels=True,
         resampleAlg=resampling,
+        srcNodata=0,
+        dstNodata=0,
         creationOptions=["COMPRESS=DEFLATE", "TILED=YES"],
     )
     ds = gdal.Warp(str(output), str(source), options=options)

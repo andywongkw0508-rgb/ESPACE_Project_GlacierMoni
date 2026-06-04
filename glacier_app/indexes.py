@@ -189,10 +189,22 @@ def compute_index_raster(first_file: Path, second_file: Path, output_file: Path)
     if ds_b is None:
         raise RuntimeError(f"Could not open raster: {second_file}")
 
-    a = ds_a.GetRasterBand(1).ReadAsArray().astype(np.float32)
-    b = ds_b.GetRasterBand(1).ReadAsArray().astype(np.float32)
+    band_a = ds_a.GetRasterBand(1)
+    band_b = ds_b.GetRasterBand(1)
+    a = band_a.ReadAsArray().astype(np.float32)
+    b = band_b.ReadAsArray().astype(np.float32)
+
+    nodata_a = band_a.GetNoDataValue()
+    nodata_b = band_b.GetNoDataValue()
+    invalid = np.zeros(a.shape, dtype=bool)
+    if nodata_a is not None:
+        invalid |= np.isclose(a, np.float32(nodata_a))
+    if nodata_b is not None:
+        invalid |= np.isclose(b, np.float32(nodata_b))
     denom = a + b
-    result = np.where(denom != 0, (a - b) / denom, INDEX_NODATA).astype(np.float32)
+    invalid |= (denom == 0)
+    safe_denom = np.where(invalid, np.float32(1.0), denom)
+    result = np.where(invalid, INDEX_NODATA, (a - b) / safe_denom).astype(np.float32)
 
     driver = gdal.GetDriverByName("GTiff")
     out_ds = driver.Create(
