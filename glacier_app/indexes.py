@@ -10,11 +10,13 @@ from osgeo import gdal
 
 try:
     from .config import PREPROCESSED_DIR
+    from .result_exports import publish_index
 except ImportError:
     import sys
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from glacier_app.config import PREPROCESSED_DIR
+    from glacier_app.result_exports import publish_index
 
 
 ProgressCallback = Callable[[str], None]
@@ -121,6 +123,7 @@ def calculate_run_indexes(run_dir: Path, progress: ProgressCallback | None = Non
                 emit(progress, f"Calculating {spec.name} for scene {scene_index}/{len(scenes)}: {scene.scene_id}")
                 try:
                     compute_index_raster(first.path, second.path, output)
+                    publish_index(output, spec.name, scene.date, scene.scene_id)
                     index_count += 1
                     writer.writerow(index_row(scene, spec, first, second, output, "ok", ""))
                     emit(progress, f"Created {output.name}")
@@ -191,8 +194,16 @@ def compute_index_raster(first_file: Path, second_file: Path, output_file: Path)
 
     a = ds_a.GetRasterBand(1).ReadAsArray().astype(np.float32)
     b = ds_b.GetRasterBand(1).ReadAsArray().astype(np.float32)
+    nodata_a = ds_a.GetRasterBand(1).GetNoDataValue()
+    nodata_b = ds_b.GetRasterBand(1).GetNoDataValue()
     denom = a + b
-    result = np.where(denom != 0, (a - b) / denom, INDEX_NODATA).astype(np.float32)
+    valid = np.isfinite(a) & np.isfinite(b) & (denom != 0)
+    if nodata_a is not None:
+        valid &= a != float(nodata_a)
+    if nodata_b is not None:
+        valid &= b != float(nodata_b)
+    result = np.full(a.shape, INDEX_NODATA, dtype=np.float32)
+    result[valid] = (a[valid] - b[valid]) / denom[valid]
 
     driver = gdal.GetDriverByName("GTiff")
     out_ds = driver.Create(

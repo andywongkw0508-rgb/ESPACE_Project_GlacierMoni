@@ -33,16 +33,20 @@ _C_TREE_ALT   = "#f4f8f9"   # alternating treeview row
 _C_STATUS     = "#e3eaec"   # status bar background
 
 from .bands import available_band_labels, band_preview_png, check_scene_bands
+from .boundaries import BoundaryResult, extract_boundary
 from .config import (
     APP_DIR,
     DATA_ROOT,
     DEFAULT_SENTINEL_PREPROCESS_RESOLUTION,
+    DEFAULT_PREVIEW_SCENE_ID,
     MANIFEST,
+    OVERLAY_BASE_SCENE_ID,
     SENTINEL_PREPROCESS_RESOLUTIONS,
 )
 from .data import load_rows
 from .indexes import IndexResult, calculate_run_indexes
 from .masks import MaskResult, build_mask, default_threshold_for
+from .overlays import OverlayResult, best_2026_base, best_2026_base_from_rows, build_year_boundary_overlay
 from .preprocessing import PreprocessResult, delete_preprocess_run, list_preprocess_runs, preprocess_rows
 from .preview import PreviewController
 from .results import ProcessingOutput, list_processing_outputs, processing_preview_png
@@ -63,6 +67,7 @@ class ImageryApp(tk.Tk):
         self.current_processing_outputs: list[ProcessingOutput] = []
         self.loaded_processing_run_paths: list[Path] = []
         self.basket_rows: dict[str, dict[str, str]] = {}
+        self.startup_preview_shown = False
 
         self.sensor_var = tk.StringVar(value="All sensors")
         self.year_var = tk.StringVar(value="All years")
@@ -70,6 +75,7 @@ class ImageryApp(tk.Tk):
         self.search_var = tk.StringVar(value="")
         self.status_var = tk.StringVar(value="")
         self.sentinel_resolution_var = tk.StringVar(value=DEFAULT_SENTINEL_PREPROCESS_RESOLUTION)
+        self.cloud_mask_var = tk.BooleanVar(value=True)
         self.mask_threshold_var = tk.StringVar(value="0.40")
         self.mask_stats_var = tk.StringVar(value="")
 
@@ -383,7 +389,7 @@ class ImageryApp(tk.Tk):
         # Controls row: resolution + remove/clear/export
         controls = ttk.Frame(basket_panel, style="Card.TFrame")
         controls.grid(row=1, column=0, sticky="ew", pady=(0, 6))
-        controls.columnconfigure(4, weight=1)
+        controls.columnconfigure(5, weight=1)
         ttk.Label(controls, text="Sentinel res. (m)", style="Card.Muted.TLabel").grid(row=0, column=0, padx=(0, 4))
         self.sentinel_resolution_combo = ttk.Combobox(
             controls,
@@ -393,10 +399,15 @@ class ImageryApp(tk.Tk):
             width=4,
         )
         self.sentinel_resolution_combo.grid(row=0, column=1, padx=(0, 12))
+        ttk.Checkbutton(
+            controls,
+            text="Cloud mask",
+            variable=self.cloud_mask_var,
+        ).grid(row=0, column=2, padx=(0, 12))
         ttk.Button(controls, text="Remove", command=self.remove_selected_basket_scene).grid(
-            row=0, column=2, padx=(0, 4))
-        ttk.Button(controls, text="Clear", command=self.clear_basket).grid(row=0, column=3, padx=(0, 4))
-        ttk.Button(controls, text="Export CSV", command=self.export_basket_csv).grid(row=0, column=4, sticky="e")
+            row=0, column=3, padx=(0, 4))
+        ttk.Button(controls, text="Clear", command=self.clear_basket).grid(row=0, column=4, padx=(0, 4))
+        ttk.Button(controls, text="Export CSV", command=self.export_basket_csv).grid(row=0, column=5, sticky="e")
 
         # Run Preprocessing — full-width accent button
         self.preprocess_button = ttk.Button(
@@ -505,7 +516,7 @@ class ImageryApp(tk.Tk):
         for column, heading, width in (
             ("run",    "Run",      110),
             ("type",   "Type",      90),
-            ("result", "Result",    76),
+            ("result", "Result",    124),
             ("scene",  "Scene ID", 275),
         ):
             self.result_tree.heading(column, text=heading)
@@ -516,14 +527,20 @@ class ImageryApp(tk.Tk):
 
         mask_bar = ttk.Frame(results_panel, style="Card.TFrame")
         mask_bar.grid(row=3, column=0, sticky="ew", pady=(8, 0))
-        mask_bar.columnconfigure(3, weight=1)
+        mask_bar.columnconfigure(5, weight=1)
         ttk.Label(mask_bar, text="Threshold ≥", style="Card.Muted.TLabel").grid(row=0, column=0, padx=(0, 4))
         ttk.Entry(mask_bar, textvariable=self.mask_threshold_var, width=7).grid(row=0, column=1, padx=(0, 6))
         self.mask_button = ttk.Button(mask_bar, text="Build Mask",
                                       style="Accent.TButton", command=self.build_selected_mask)
         self.mask_button.grid(row=0, column=2, padx=(0, 10))
+        self.boundary_button = ttk.Button(mask_bar, text="Refined Boundary",
+                                          command=self.extract_selected_boundary)
+        self.boundary_button.grid(row=0, column=3, padx=(0, 10))
+        self.overlay_button = ttk.Button(mask_bar, text="Overlay Target",
+                                         command=self.build_boundary_overlay)
+        self.overlay_button.grid(row=0, column=4, padx=(0, 10))
         ttk.Label(mask_bar, textvariable=self.mask_stats_var, style="Card.Muted.TLabel").grid(
-            row=0, column=3, sticky="w")
+            row=0, column=5, sticky="w")
 
         self.detail_text = tk.Text(
             panel, height=8, wrap="word",
@@ -601,14 +618,27 @@ class ImageryApp(tk.Tk):
         self.metric_total.configure(text=str(len(self.filtered_rows)))
         self.status_var.set(f"Loaded {len(self.rows)} scenes from {MANIFEST.name}; showing {len(self.filtered_rows)}.")
         if self.filtered_rows:
-            first = self.tree.get_children()[0]
-            self.tree.selection_set(first)
-            self.tree.focus(first)
-            self.show_scene(self.filtered_rows[0])
+            selected_index = self.default_startup_preview_index() if not self.startup_preview_shown else 0
+            selected_item = self.tree.get_children()[selected_index]
+            self.tree.selection_set(selected_item)
+            self.tree.focus(selected_item)
+            self.tree.see(selected_item)
+            self.show_scene(self.filtered_rows[selected_index])
+            self.startup_preview_shown = True
         else:
             self.preview.show_message("No scenes match the current filters.")
             self.clear_band_checker()
             self.show_details_text("No scene selected.")
+
+    def default_startup_preview_index(self) -> int:
+        candidates = [
+            (index, row)
+            for index, row in enumerate(self.filtered_rows)
+            if row.get("item_id", "") == DEFAULT_PREVIEW_SCENE_ID and row.get("preview_path", "")
+        ]
+        if not candidates:
+            return 0
+        return candidates[0][0]
 
     def on_scene_selected(self, _event: tk.Event) -> None:
         selection = self.tree.selection()
@@ -821,18 +851,21 @@ class ImageryApp(tk.Tk):
             return
         rows = sorted(self.basket_rows.values(), key=lambda item: (item.get("date", ""), item.get("sensor", "")))
         sentinel_resolution = self.sentinel_resolution_var.get()
+        cloud_mask = self.cloud_mask_var.get()
         self.preprocess_button.configure(state="disabled")
         self.status_var.set(
-            f"Starting preprocessing for {len(rows)} scene(s). Sentinel: {sentinel_resolution} m; Landsat: 30 m."
+            f"Starting preprocessing for {len(rows)} scene(s). Sentinel: {sentinel_resolution} m; "
+            f"Landsat: 30 m; cloud mask: {'on' if cloud_mask else 'off'}."
         )
-        worker = threading.Thread(target=self.preprocess_worker, args=(rows, sentinel_resolution), daemon=True)
+        worker = threading.Thread(target=self.preprocess_worker, args=(rows, sentinel_resolution, cloud_mask), daemon=True)
         worker.start()
 
-    def preprocess_worker(self, rows: list[dict[str, str]], sentinel_resolution: str) -> None:
+    def preprocess_worker(self, rows: list[dict[str, str]], sentinel_resolution: str, cloud_mask: bool) -> None:
         try:
             result = preprocess_rows(
                 rows,
                 sentinel_resolution=sentinel_resolution,
+                cloud_mask=cloud_mask,
                 progress=lambda message: self.after(0, self.status_var.set, message),
             )
         except Exception as exc:
@@ -1065,6 +1098,30 @@ class ImageryApp(tk.Tk):
         worker = threading.Thread(target=self.mask_worker, args=(output, threshold), daemon=True)
         worker.start()
 
+    def extract_selected_boundary(self) -> None:
+        output = self.selected_processing_output()
+        if output is None or output.kind != "Mask":
+            self.status_var.set("Select a mask result before extracting a boundary.")
+            return
+        self.boundary_button.configure(state="disabled")
+        self.status_var.set(f"Extracting refined boundary from {output.label}.")
+        worker = threading.Thread(target=self.boundary_worker, args=(output,), daemon=True)
+        worker.start()
+
+    def build_boundary_overlay(self) -> None:
+        base = best_2026_base(self.current_processing_outputs) or best_2026_base_from_rows(self.rows)
+        boundaries = [output for output in self.current_processing_outputs if output.kind == "Boundary"]
+        if base is None:
+            self.status_var.set(f"No target visual raster is available for overlay: {OVERLAY_BASE_SCENE_ID}")
+            return
+        if not boundaries:
+            self.status_var.set("Extract at least one boundary before building the target-scene overlay.")
+            return
+        self.overlay_button.configure(state="disabled")
+        self.status_var.set(f"Building year-colored overlay on target base: {base.label}.")
+        worker = threading.Thread(target=self.overlay_worker, args=(base, boundaries), daemon=True)
+        worker.start()
+
     def mask_worker(self, output: ProcessingOutput, threshold: float) -> None:
         try:
             result = build_mask(output, threshold)
@@ -1072,6 +1129,22 @@ class ImageryApp(tk.Tk):
             self.after(0, self.mask_finished, None, exc)
             return
         self.after(0, self.mask_finished, result, None)
+
+    def boundary_worker(self, output: ProcessingOutput) -> None:
+        try:
+            result = extract_boundary(output)
+        except Exception as exc:
+            self.after(0, self.boundary_finished, None, exc)
+            return
+        self.after(0, self.boundary_finished, result, None)
+
+    def overlay_worker(self, base: ProcessingOutput, boundaries: list[ProcessingOutput]) -> None:
+        try:
+            result = build_year_boundary_overlay(base, boundaries)
+        except Exception as exc:
+            self.after(0, self.overlay_finished, None, exc)
+            return
+        self.after(0, self.overlay_finished, result, None)
 
     def mask_finished(self, result: MaskResult | None, error: Exception | None) -> None:
         self.mask_button.configure(state="normal")
@@ -1090,12 +1163,64 @@ class ImageryApp(tk.Tk):
             "Mask complete",
             f"Mask pixels: {result.mask_pixels:,}\n"
             f"Valid pixels: {result.valid_pixels:,}\n"
+            f"Water excluded: {result.water_excluded_pixels:,}\n"
+            f"Cloud/QA excluded: {result.cloud_excluded_pixels:,}\n"
             f"Area: {result.area_km2:.3f} km2\n\n"
             f"Mask file:\n{result.output.output_file}\n\n"
             f"Manifest:\n{result.manifest}",
         )
 
+    def boundary_finished(self, result: BoundaryResult | None, error: Exception | None) -> None:
+        self.boundary_button.configure(state="normal")
+        if error:
+            self.status_var.set(f"Boundary extraction failed: {error}")
+            messagebox.showerror("Boundary extraction failed", str(error))
+            return
+        if result is None:
+            return
+        run_paths = self.loaded_processing_run_paths or [result.run_dir]
+        self.load_processing_results_for_paths(run_paths, selected_output=result.output.output_file)
+        stats_text = f"{result.boundary_length_km:.3f} km boundary | {result.polygon_count:,} polygon(s)"
+        self.mask_stats_var.set(stats_text)
+        self.status_var.set(f"Boundary extracted: {stats_text}")
+        messagebox.showinfo(
+            "Boundary complete",
+            f"Source mask pixels: {result.source_pixels:,}\n"
+            f"Refined mask pixels: {result.refined_pixels:,}\n"
+            f"Boundary pixels: {result.boundary_pixels:,}\n"
+            f"Boundary length: {result.boundary_length_km:.3f} km\n"
+            f"Polygons: {result.polygon_count:,}\n\n"
+            f"Boundary raster:\n{result.output.output_file}\n\n"
+            f"Boundary GeoJSON:\n{result.boundary_file}\n\n"
+            f"Polygon GeoJSON:\n{result.polygon_file}\n\n"
+            f"Manifest:\n{result.manifest}",
+        )
+
+    def overlay_finished(self, result: OverlayResult | None, error: Exception | None) -> None:
+        self.overlay_button.configure(state="normal")
+        if error:
+            self.status_var.set(f"Overlay failed: {error}")
+            messagebox.showerror("Overlay failed", str(error))
+            return
+        if result is None:
+            return
+        self.preview.show_image(str(result.output_file), preserve_view=False)
+        self.preview_tabs.select(1)
+        years = ", ".join(result.years)
+        self.mask_stats_var.set(f"Overlay: {years}")
+        self.status_var.set(f"Overlay created for {result.boundary_count} boundary result(s): {result.output_file}")
+        self.show_details_text(
+            "Boundary overlay\n"
+            f"Years: {years}\n"
+            f"Boundary results: {result.boundary_count}\n"
+            f"Base raster: {result.base_file}\n"
+            f"Output: {result.output_file}"
+        )
+
     def processing_result_details(self, output: ProcessingOutput) -> str:
+        size_label = "Boundary pixels" if output.kind == "Boundary" else "Mask pixels"
+        metric_label = "Boundary length" if output.kind == "Boundary" else "Area"
+        metric_unit = "km" if output.kind == "Boundary" else "km2"
         fields = [
             ("Run", output.run_name),
             ("Type", output.kind),
@@ -1104,8 +1229,8 @@ class ImageryApp(tk.Tk):
             ("Date", output.date),
             ("Sensor", output.sensor),
             ("Formula", output.formula),
-            ("Mask pixels", f"{output.pixel_count:,}" if output.pixel_count else ""),
-            ("Area", f"{output.area_km2:.3f} km2" if output.area_km2 else ""),
+            (size_label, f"{output.pixel_count:,}" if output.pixel_count else ""),
+            (metric_label, f"{output.area_km2:.3f} {metric_unit}" if output.area_km2 else ""),
             ("Output", str(output.output_file)),
         ]
         return "\n".join(f"{label}: {value}" for label, value in fields if value)

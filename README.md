@@ -10,6 +10,7 @@ A Tkinter desktop application for inspecting, filtering, and processing band-sep
 | **Preprocess** | Clip and reproject selected scenes to the study AOI (EPSG:32628) via GDAL | `preprocessed_manifest.csv` |
 | **Indexes** | Calculate NDSI and NDWI rasters from preprocessed bands (numpy + GDAL) | `index_manifest.csv` |
 | **Masks** | Threshold index rasters into binary glacier masks, report area in km² | `mask_manifest.csv` |
+| **Boundaries** | Extract glacier boundary rasters plus polygon and boundary GeoJSON vectors from masks | `boundary_manifest.csv` |
 
 ---
 
@@ -143,6 +144,7 @@ master_manifest.csv
             └─ Run Preprocessing  →  outputs/preprocessed/run_YYYYMMDD_HHMMSS_s2XXm/
                  └─ Calculate Indexes  →  .../indexes/<scene_id>/
                       └─ Build Mask  →  .../masks/<scene_id>/
+                           └─ Extract Boundary  →  .../boundaries/<scene_id>/
 ```
 
 ### Preprocessing
@@ -151,6 +153,7 @@ master_manifest.csv
 - Reprojects to EPSG:32628 (UTM zone 28N)
 - Sentinel-2: choose 10 m / 20 m / 30 m in the UI; Landsat fixed at 30 m
 - SCL and QA bands use nearest-neighbour resampling; spectral bands use bilinear
+- Optional `Cloud mask` removes Sentinel-2 SCL no-data, defective, dark/shadow, cloud shadow, medium/high cloud, and cirrus pixels from analysis bands. Snow/ice is kept. For Landsat, QA fill, dilated cloud, cirrus, cloud, and cloud-shadow bits are removed.
 
 ### Index calculation
 
@@ -169,4 +172,29 @@ Default thresholds (editable in the UI):
 | NDWI  | ≥ 0.20 |
 
 Area statistics (pixel count, valid pixels, km²) are reported on-screen and saved to `mask_manifest.csv`.
+
+For NDSI glacier masks, the mask builder also uses matching run outputs when available: `NDWI >= 0.20` pixels are removed as water, and Sentinel-2 SCL / Landsat QA Pixel removes cloud, shadow, water, and invalid pixels before boundary extraction.
+
+### Boundary extraction
+
+Select a mask in the `Processing Results` tab and click `Refined Boundary` to clean the mask and create a previewable boundary GeoTIFF, a polygon GeoJSON for the mask area, and a boundary-line GeoJSON for QGIS inspection or later retreat-distance measurements.
+
+The refinement step removes small noisy patches, fills small holes, smooths the binary mask, and simplifies the polygon outline before extracting the boundary.
+
+Boundary outputs are saved under `outputs/preprocessed/run_YYYYMMDD_HHMMSS_s2XXm/boundaries/` and recorded in `boundary_manifest.csv` with boundary pixel count, polygon count, and boundary length.
+
+### Organized result folders and overlays
+
+Each run remains self-contained, but the app also copies key products into easier browsing folders:
+
+```text
+outputs/results/
+  indexes/NDSI/<year>/
+  indexes/NDWI/<year>/
+  masks/<index>/<year>/
+  boundaries/<year>/<scene_id>/
+  overlays/
+```
+
+After loading processing results with one or more boundary results, click `Overlay Target`. The app uses `S2B_MSIL2A_20250820T124309_R095_T28WDS_20250820T162234` as the base image, creates a PNG in `outputs/results/overlays/` with boundaries colored by year, adds a year legend, and opens it in the preview window for visual inspection.
 
