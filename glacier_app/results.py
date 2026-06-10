@@ -35,8 +35,40 @@ def list_processing_outputs(run_dirs: list[Path]) -> list[ProcessingOutput]:
         run_dir = checked_run_dir(run_dir)
         outputs.extend(read_index_outputs(run_dir))
         outputs.extend(read_mask_outputs(run_dir))
+        outputs.extend(read_boundary_outputs(run_dir))
         outputs.extend(read_preprocessed_outputs(run_dir))
     outputs.sort(key=lambda item: (item.run_name, item.date, item.scene_id, item.kind, item.label))
+    return outputs
+
+
+def read_boundary_outputs(run_dir: Path) -> list[ProcessingOutput]:
+    manifest = run_dir / "boundary_manifest.csv"
+    if not manifest.exists():
+        return []
+
+    outputs = []
+    with manifest.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            if row.get("status") != "ok":
+                continue
+            output_file = existing_output_path(row.get("output_file", ""))
+            if not output_file:
+                continue
+            outputs.append(
+                ProcessingOutput(
+                    run_name=run_dir.name,
+                    kind="Boundary",
+                    label=f"{row.get('source_mask', '')} Boundary".strip(),
+                    scene_id=row.get("scene_id", ""),
+                    date=row.get("date", ""),
+                    sensor=row.get("sensor", ""),
+                    formula=f"Boundary of {row.get('source_formula', '')}".strip(),
+                    output_file=output_file,
+                    pixel_count=parse_int(row.get("boundary_pixels", "")),
+                    area_km2=parse_float(row.get("boundary_length_km", "")),
+                )
+            )
     return outputs
 
 
@@ -139,7 +171,7 @@ def processing_preview_png(output: ProcessingOutput) -> Path:
 
     if output.kind == "Index":
         _render_index_png(source, preview_path)
-    elif output.kind == "Mask":
+    elif output.kind in {"Mask", "Boundary"}:
         gdal.UseExceptions()
         opts = gdal.TranslateOptions(options=["-ot", "Byte", "-outsize", "1600", "0", "-scale", "0", "1", "0", "255"])
         ds = gdal.Translate(str(preview_path), str(source), options=opts)

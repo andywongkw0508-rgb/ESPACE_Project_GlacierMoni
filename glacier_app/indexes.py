@@ -10,11 +10,13 @@ from osgeo import gdal
 
 try:
     from .config import PREPROCESSED_DIR
+    from .result_exports import publish_index
 except ImportError:
     import sys
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from glacier_app.config import PREPROCESSED_DIR
+    from glacier_app.result_exports import publish_index
 
 
 ProgressCallback = Callable[[str], None]
@@ -121,6 +123,7 @@ def calculate_run_indexes(run_dir: Path, progress: ProgressCallback | None = Non
                 emit(progress, f"Calculating {spec.name} for scene {scene_index}/{len(scenes)}: {scene.scene_id}")
                 try:
                     compute_index_raster(first.path, second.path, output)
+                    publish_index(output, spec.name, scene.date, scene.scene_id)
                     index_count += 1
                     writer.writerow(index_row(scene, spec, first, second, output, "ok", ""))
                     emit(progress, f"Created {output.name}")
