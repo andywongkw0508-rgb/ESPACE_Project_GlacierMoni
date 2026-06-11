@@ -32,6 +32,9 @@ _C_DANGER_DK  = "#a93226"
 _C_TREE_ALT   = "#f4f8f9"   # alternating treeview row
 _C_STATUS     = "#e3eaec"   # status bar background
 
+from osgeo import gdal as _gdal
+_gdal.SetCacheMax(512 * 1024 * 1024)  # 512 MB GDAL block cache
+
 from .bands import available_band_labels, band_preview_png, check_scene_bands
 from .boundaries import BoundaryResult, extract_boundary
 from .config import (

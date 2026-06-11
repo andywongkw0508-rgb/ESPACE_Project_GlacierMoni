@@ -216,7 +216,7 @@ def compute_index_raster(first_file: Path, second_file: Path, output_file: Path)
         ds_a.RasterYSize,
         1,
         gdal.GDT_Float32,
-        options=["COMPRESS=DEFLATE", "TILED=YES"],
+        options=["COMPRESS=LZW", "PREDICTOR=3", "TILED=YES"],
     )
     if out_ds is None:
         raise RuntimeError(f"Could not create output raster: {output_file}")
