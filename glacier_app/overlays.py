@@ -13,17 +13,19 @@ from .result_exports import overlay_dir, safe_name
 from .results import ProcessingOutput
 
 
+# Cool (oldest/largest) → warm (newest/smallest) to show glacier retreat direction.
+# Designed for up to 10 years; additional years cycle back from the start.
 YEAR_COLORS = [
-    (230, 57, 70),
-    (29, 53, 87),
-    (42, 157, 143),
-    (244, 162, 97),
-    (131, 56, 236),
-    (255, 190, 11),
-    (0, 166, 251),
-    (106, 153, 78),
-    (214, 40, 40),
-    (80, 81, 79),
+    (63,  84, 186),   # deep blue   — oldest
+    (32, 119, 180),   # blue
+    (31, 160, 187),   # teal
+    (44, 177, 133),   # green-teal
+    (102, 193,  95),  # green
+    (170, 204,  60),  # yellow-green
+    (230, 200,  40),  # yellow
+    (245, 157,  36),  # orange
+    (237,  99,  52),  # orange-red
+    (215,  48,  39),  # red         — newest
 ]
 MAX_OVERLAY_DIMENSION = 1800
 LEGEND_ROW_HEIGHT = 34
@@ -104,6 +106,20 @@ def add_legend(rgb: np.ndarray, year_colors: dict[str, tuple[int, int, int]]) ->
     result = np.zeros((3, height + legend_height, width), dtype=np.uint8)
     result[:, :height, :] = rgb
     result[:, height:, :] = 245
+
+    # temporal gradient strip (blue=oldest → red=newest) when more than one year
+    colors_list = list(year_colors.values())
+    if len(colors_list) > 1:
+        strip_x0, strip_x1 = LEGEND_PADDING, width - LEGEND_PADDING
+        strip_y0, strip_y1 = height + 3, height + 7
+        strip_w = strip_x1 - strip_x0
+        if strip_w > 0:
+            c0 = np.array(colors_list[0], dtype=np.float32)
+            c1 = np.array(colors_list[-1], dtype=np.float32)
+            for px in range(strip_w):
+                t = px / (strip_w - 1)
+                color = (c0 * (1 - t) + c1 * t).astype(np.uint8)
+                result[:, strip_y0:strip_y1, strip_x0 + px] = color[:, None]
 
     x = LEGEND_PADDING
     y = height + (legend_height - LEGEND_SWATCH_SIZE) // 2

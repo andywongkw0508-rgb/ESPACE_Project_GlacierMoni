@@ -402,32 +402,42 @@ class ImageryApp(tk.Tk):
         ttk.Label(thresh_bar, textvariable=self.mask_stats_var, style="Card.Muted.TLabel").grid(
             row=0, column=2, sticky="w")
 
-        # ── single-item actions ────────────────────────────────────
-        single_bar = ttk.Frame(results_panel, style="Card.TFrame")
-        single_bar.grid(row=3, column=0, sticky="ew", pady=(6, 0))
-        single_bar.columnconfigure(2, weight=1)
-        self.mask_button = ttk.Button(single_bar, text="▶  Build Mask",
+        # ── action area: scope label | buttons ────────────────────
+        action_frame = ttk.Frame(results_panel, style="Card.TFrame")
+        action_frame.grid(row=3, column=0, sticky="ew", pady=(6, 0))
+        action_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(action_frame, text="Selected", style="Card.Muted.TLabel").grid(
+            row=0, column=0, sticky="w", padx=(0, 8))
+        single_inner = ttk.Frame(action_frame, style="Card.TFrame")
+        single_inner.grid(row=0, column=1, sticky="ew")
+        single_inner.columnconfigure(2, weight=1)
+        self.mask_button = ttk.Button(single_inner, text="▶  Build Mask",
                                       style="Accent.TButton", command=self.build_selected_mask)
-        self.mask_button.grid(row=0, column=0, sticky="ew")
-        self.boundary_button = ttk.Button(single_bar, text="Refined Boundary",
+        self.mask_button.grid(row=0, column=0)
+        self.boundary_button = ttk.Button(single_inner, text="Refined Boundary",
                                           command=self.extract_selected_boundary)
         self.boundary_button.grid(row=0, column=1, padx=(4, 0))
-        self.overlay_button = ttk.Button(single_bar, text="Overlay Target",
+        self.overlay_button = ttk.Button(single_inner, text="Overlay Target",
                                          command=self.build_boundary_overlay)
         self.overlay_button.grid(row=0, column=2, sticky="e")
 
-        # ── batch actions ──────────────────────────────────────────
-        batch_bar = ttk.Frame(results_panel, style="Card.TFrame")
-        batch_bar.grid(row=4, column=0, sticky="ew", pady=(4, 0))
-        batch_bar.columnconfigure(0, weight=1)
-        batch_bar.columnconfigure(1, weight=1)
+        ttk.Separator(action_frame, style="TSeparator").grid(
+            row=1, column=0, columnspan=2, sticky="ew", pady=(5, 5))
+
+        ttk.Label(action_frame, text="All", style="Card.Muted.TLabel").grid(
+            row=2, column=0, sticky="w", padx=(0, 8))
+        batch_inner = ttk.Frame(action_frame, style="Card.TFrame")
+        batch_inner.grid(row=2, column=1, sticky="ew")
+        batch_inner.columnconfigure(0, weight=1)
+        batch_inner.columnconfigure(1, weight=1)
         self.batch_mask_button = ttk.Button(
-            batch_bar, text="▶  Build All Masks",
+            batch_inner, text="▶  Build All Masks",
             style="Accent.TButton", command=self.build_all_masks,
         )
         self.batch_mask_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
         self.batch_boundary_button = ttk.Button(
-            batch_bar, text="Extract All Boundaries",
+            batch_inner, text="Extract All Boundaries",
             command=self.extract_all_boundaries,
         )
         self.batch_boundary_button.grid(row=0, column=1, sticky="ew")
