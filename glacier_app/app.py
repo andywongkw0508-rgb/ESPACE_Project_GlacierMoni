@@ -82,10 +82,69 @@ class ImageryApp(tk.Tk):
         self._step_labels: list[ttk.Label] = []
         self.result_filter_var = tk.StringVar(value="Index")
         self._displayed_outputs: list[ProcessingOutput] = []
+        self._progress_dialog: tk.Toplevel | None = None
 
         self.configure_style()
         self.build_layout()
         self.apply_filters()
+
+    # ── progress dialog helpers ──────────────────────────────────────────────
+
+    def _open_progress_dialog(self, title: str, message: str = "Working…") -> None:
+        if self._progress_dialog:
+            self._close_progress_dialog()
+        dlg = tk.Toplevel(self)
+        dlg.title(title)
+        dlg.resizable(False, False)
+        dlg.protocol("WM_DELETE_WINDOW", lambda: None)
+
+        frame = ttk.Frame(dlg, padding=(24, 18, 24, 18))
+        frame.pack(fill="both", expand=True)
+
+        msg_var = tk.StringVar(value=message)
+        ttk.Label(frame, textvariable=msg_var, font=(_UI_FONT, 10),
+                  wraplength=360, style="TLabel").pack(anchor="w")
+
+        bar = ttk.Progressbar(frame, mode="indeterminate", length=400)
+        bar.pack(pady=(14, 0))
+        bar.start(12)
+
+        dlg._msg_var = msg_var  # type: ignore[attr-defined]
+        dlg._bar = bar          # type: ignore[attr-defined]
+
+        self.update_idletasks()
+        px, py = self.winfo_x(), self.winfo_y()
+        pw, ph = self.winfo_width(), self.winfo_height()
+        dlg.update_idletasks()
+        dw = dlg.winfo_reqwidth()
+        dh = dlg.winfo_reqheight()
+        dlg.geometry(f"+{px + (pw - dw) // 2}+{py + (ph - dh) // 2}")
+
+        dlg.grab_set()
+        self._progress_dialog = dlg
+
+    def _update_progress_dialog(self, message: str) -> None:
+        dlg = self._progress_dialog
+        if dlg is None:
+            return
+        try:
+            dlg._msg_var.set(message)  # type: ignore[attr-defined]
+        except tk.TclError:
+            pass
+
+    def _close_progress_dialog(self) -> None:
+        dlg = self._progress_dialog
+        self._progress_dialog = None
+        if dlg is None:
+            return
+        try:
+            dlg._bar.stop()         # type: ignore[attr-defined]
+            dlg.grab_release()
+            dlg.destroy()
+        except tk.TclError:
+            pass
+
+    # ── styles ───────────────────────────────────────────────────────────────
 
     def configure_style(self) -> None:
         self.configure(bg=_C_APP_BG)
@@ -900,20 +959,25 @@ class ImageryApp(tk.Tk):
         cloud_mask = self.cloud_mask_var.get()
         self.preprocess_button.configure(state="disabled")
         self._advance_step(2)
-        self.status_var.set(
-            f"Starting preprocessing for {len(rows)} scene(s). Sentinel: {sentinel_resolution} m; "
-            f"Landsat: 30 m; cloud mask: {'on' if cloud_mask else 'off'}."
+        init_msg = (
+            f"Preprocessing {len(rows)} scene(s) — Sentinel {sentinel_resolution} m / Landsat 30 m"
+            + (" + cloud mask" if cloud_mask else "")
         )
+        self.status_var.set(init_msg)
+        self._open_progress_dialog("Preprocessing", init_msg)
         worker = threading.Thread(target=self.preprocess_worker, args=(rows, sentinel_resolution, cloud_mask), daemon=True)
         worker.start()
 
     def preprocess_worker(self, rows: list[dict[str, str]], sentinel_resolution: str, cloud_mask: bool) -> None:
+        def progress(message: str) -> None:
+            self.after(0, self.status_var.set, message)
+            self.after(0, self._update_progress_dialog, message)
         try:
             result = preprocess_rows(
                 rows,
                 sentinel_resolution=sentinel_resolution,
                 cloud_mask=cloud_mask,
-                progress=lambda message: self.after(0, self.status_var.set, message),
+                progress=progress,
             )
         except Exception as exc:
             self.after(0, self.preprocess_finished, None, exc)
@@ -921,6 +985,7 @@ class ImageryApp(tk.Tk):
         self.after(0, self.preprocess_finished, result, None)
 
     def preprocess_finished(self, result: PreprocessResult | None, error: Exception | None) -> None:
+        self._close_progress_dialog()
         self.preprocess_button.configure(state="normal")
         if error:
             self.status_var.set(f"Preprocessing failed: {error}")
@@ -1019,19 +1084,21 @@ class ImageryApp(tk.Tk):
             self.status_var.set("Select one or more preprocessing runs before calculating indexes.")
             return
         self.index_button.configure(state="disabled")
-        self.status_var.set(f"Calculating NDSI and NDWI for {len(run_paths)} preprocessing run(s).")
+        init_msg = f"Calculating NDSI and NDWI for {len(run_paths)} run(s)…"
+        self.status_var.set(init_msg)
+        self._open_progress_dialog("Calculating Indexes", init_msg)
         worker = threading.Thread(target=self.index_worker, args=(run_paths,), daemon=True)
         worker.start()
 
     def index_worker(self, run_paths: list[Path]) -> None:
+        def progress(message: str) -> None:
+            self.after(0, self.status_var.set, message)
+            self.after(0, self._update_progress_dialog, message)
         results = []
         failures = []
         for run_path in run_paths:
             try:
-                result = calculate_run_indexes(
-                    run_path,
-                    progress=lambda message: self.after(0, self.status_var.set, message),
-                )
+                result = calculate_run_indexes(run_path, progress=progress)
             except Exception as exc:
                 failures.append((run_path, exc))
             else:
@@ -1039,6 +1106,7 @@ class ImageryApp(tk.Tk):
         self.after(0, self.index_finished, results, failures)
 
     def index_finished(self, results: list[IndexResult], failures: list[tuple[Path, Exception]]) -> None:
+        self._close_progress_dialog()
         self.index_button.configure(state="normal")
         self.refresh_preprocess_runs()
         index_count = sum(result.index_count for result in results)
@@ -1185,9 +1253,9 @@ class ImageryApp(tk.Tk):
             return
         self.batch_mask_button.configure(state="disabled")
         self.mask_button.configure(state="disabled")
-        self.status_var.set(
-            f"Building masks for {len(index_outputs)} index result(s) with threshold ≥ {threshold:.3f}."
-        )
+        init_msg = f"Building masks for {len(index_outputs)} index result(s) — threshold ≥ {threshold:.3f}"
+        self.status_var.set(init_msg)
+        self._open_progress_dialog("Building All Masks", init_msg)
         worker = threading.Thread(
             target=self._batch_mask_worker, args=(index_outputs, threshold), daemon=True
         )
@@ -1200,7 +1268,9 @@ class ImageryApp(tk.Tk):
             return
         self.batch_boundary_button.configure(state="disabled")
         self.boundary_button.configure(state="disabled")
-        self.status_var.set(f"Extracting boundaries for {len(mask_outputs)} mask(s).")
+        init_msg = f"Extracting boundaries for {len(mask_outputs)} mask(s)…"
+        self.status_var.set(init_msg)
+        self._open_progress_dialog("Extracting All Boundaries", init_msg)
         worker = threading.Thread(
             target=self._batch_boundary_worker, args=(mask_outputs,), daemon=True
         )
@@ -1210,8 +1280,9 @@ class ImageryApp(tk.Tk):
         results = []
         failures = []
         for i, output in enumerate(outputs):
-            self.after(0, self.status_var.set,
-                       f"Building mask {i + 1}/{len(outputs)}: {output.label}...")
+            msg = f"Building mask {i + 1}/{len(outputs)}: {output.label}…"
+            self.after(0, self.status_var.set, msg)
+            self.after(0, self._update_progress_dialog, msg)
             try:
                 result = build_mask(output, threshold)
                 results.append(result)
@@ -1223,8 +1294,9 @@ class ImageryApp(tk.Tk):
         results = []
         failures = []
         for i, output in enumerate(outputs):
-            self.after(0, self.status_var.set,
-                       f"Extracting boundary {i + 1}/{len(outputs)}: {output.label}...")
+            msg = f"Extracting boundary {i + 1}/{len(outputs)}: {output.label}…"
+            self.after(0, self.status_var.set, msg)
+            self.after(0, self._update_progress_dialog, msg)
             try:
                 result = extract_boundary(output)
                 results.append(result)
@@ -1235,6 +1307,7 @@ class ImageryApp(tk.Tk):
     def _batch_mask_finished(
         self, results: list[MaskResult], failures: list[tuple[ProcessingOutput, Exception]]
     ) -> None:
+        self._close_progress_dialog()
         self.batch_mask_button.configure(state="normal")
         self.mask_button.configure(state="normal")
         if failures:
@@ -1259,6 +1332,7 @@ class ImageryApp(tk.Tk):
     def _batch_boundary_finished(
         self, results: list[BoundaryResult], failures: list[tuple[ProcessingOutput, Exception]]
     ) -> None:
+        self._close_progress_dialog()
         self.batch_boundary_button.configure(state="normal")
         self.boundary_button.configure(state="normal")
         if failures:
