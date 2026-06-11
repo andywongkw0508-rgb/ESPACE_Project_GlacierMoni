@@ -80,6 +80,8 @@ class ImageryApp(tk.Tk):
         self.mask_stats_var = tk.StringVar(value="")
         self._workflow_step = 0
         self._step_labels: list[ttk.Label] = []
+        self.result_filter_var = tk.StringVar(value="Index")
+        self._displayed_outputs: list[ProcessingOutput] = []
 
         self.configure_style()
         self.build_layout()
@@ -362,8 +364,20 @@ class ImageryApp(tk.Tk):
         results_panel = ttk.Frame(self.preview_tabs, style="Card.TFrame", padding=8)
         self.preview_tabs.add(results_panel, text="  Results  ")
         results_panel.columnconfigure(0, weight=1)
-        ttk.Label(results_panel, text="Processing Results", style="Card.TLabel",
-                  font=(_UI_FONT, 10, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 4))
+
+        res_header = ttk.Frame(results_panel, style="Card.TFrame")
+        res_header.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        res_header.columnconfigure(0, weight=1)
+        ttk.Label(res_header, text="Processing Results", style="Card.TLabel",
+                  font=(_UI_FONT, 10, "bold")).grid(row=0, column=0, sticky="w")
+        filter_combo = ttk.Combobox(
+            res_header, textvariable=self.result_filter_var,
+            values=["Index", "Mask", "Boundary", "All"],
+            state="readonly", width=9,
+        )
+        filter_combo.grid(row=0, column=1, sticky="e")
+        filter_combo.bind("<<ComboboxSelected>>", lambda _e: self.refresh_processing_results())
+
         result_columns = ("run", "type", "result", "scene")
         self.result_tree = ttk.Treeview(results_panel, columns=result_columns, show="headings",
                                         height=4, selectmode="browse")
@@ -379,22 +393,44 @@ class ImageryApp(tk.Tk):
         self.result_tree.grid(row=1, column=0, sticky="ew")
         self.result_tree.bind("<<TreeviewSelect>>", self.on_processing_result_selected)
 
-        mask_bar = ttk.Frame(results_panel, style="Card.TFrame")
-        mask_bar.grid(row=2, column=0, sticky="ew", pady=(6, 0))
-        mask_bar.columnconfigure(2, weight=1)
-        ttk.Label(mask_bar, text="Threshold ≥", style="Card.Muted.TLabel").grid(row=0, column=0, padx=(0, 4))
-        ttk.Entry(mask_bar, textvariable=self.mask_threshold_var, width=7).grid(row=0, column=1, padx=(0, 10))
-        ttk.Label(mask_bar, textvariable=self.mask_stats_var, style="Card.Muted.TLabel").grid(
+        # ── threshold + stats ──────────────────────────────────────
+        thresh_bar = ttk.Frame(results_panel, style="Card.TFrame")
+        thresh_bar.grid(row=2, column=0, sticky="ew", pady=(6, 0))
+        thresh_bar.columnconfigure(2, weight=1)
+        ttk.Label(thresh_bar, text="Threshold ≥", style="Card.Muted.TLabel").grid(row=0, column=0, padx=(0, 4))
+        ttk.Entry(thresh_bar, textvariable=self.mask_threshold_var, width=7).grid(row=0, column=1, padx=(0, 10))
+        ttk.Label(thresh_bar, textvariable=self.mask_stats_var, style="Card.Muted.TLabel").grid(
             row=0, column=2, sticky="w")
-        self.mask_button = ttk.Button(mask_bar, text="▶  Build Mask",
+
+        # ── single-item actions ────────────────────────────────────
+        single_bar = ttk.Frame(results_panel, style="Card.TFrame")
+        single_bar.grid(row=3, column=0, sticky="ew", pady=(6, 0))
+        single_bar.columnconfigure(2, weight=1)
+        self.mask_button = ttk.Button(single_bar, text="▶  Build Mask",
                                       style="Accent.TButton", command=self.build_selected_mask)
-        self.mask_button.grid(row=1, column=0, sticky="ew", pady=(6, 0))
-        self.boundary_button = ttk.Button(mask_bar, text="Refined Boundary",
+        self.mask_button.grid(row=0, column=0, sticky="ew")
+        self.boundary_button = ttk.Button(single_bar, text="Refined Boundary",
                                           command=self.extract_selected_boundary)
-        self.boundary_button.grid(row=1, column=1, padx=(4, 0), pady=(6, 0))
-        self.overlay_button = ttk.Button(mask_bar, text="Overlay Target",
+        self.boundary_button.grid(row=0, column=1, padx=(4, 0))
+        self.overlay_button = ttk.Button(single_bar, text="Overlay Target",
                                          command=self.build_boundary_overlay)
-        self.overlay_button.grid(row=1, column=2, sticky="e", pady=(6, 0))
+        self.overlay_button.grid(row=0, column=2, sticky="e")
+
+        # ── batch actions ──────────────────────────────────────────
+        batch_bar = ttk.Frame(results_panel, style="Card.TFrame")
+        batch_bar.grid(row=4, column=0, sticky="ew", pady=(4, 0))
+        batch_bar.columnconfigure(0, weight=1)
+        batch_bar.columnconfigure(1, weight=1)
+        self.batch_mask_button = ttk.Button(
+            batch_bar, text="▶  Build All Masks",
+            style="Accent.TButton", command=self.build_all_masks,
+        )
+        self.batch_mask_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        self.batch_boundary_button = ttk.Button(
+            batch_bar, text="Extract All Boundaries",
+            command=self.extract_all_boundaries,
+        )
+        self.batch_boundary_button.grid(row=0, column=1, sticky="ew")
 
     def _build_step_bar(self, parent: ttk.Frame) -> None:
         frame = ttk.Frame(parent, style="Card.TFrame")
@@ -1042,14 +1078,20 @@ class ImageryApp(tk.Tk):
             self.status_var.set("No processing result rasters were found for the selected run(s).")
 
     def refresh_processing_results(self, selected_output: Path | None = None) -> None:
+        f = self.result_filter_var.get()
+        self._displayed_outputs = [
+            o for o in self.current_processing_outputs
+            if f == "All" or o.kind == f
+        ]
         self.result_tree.delete(*self.result_tree.get_children())
         selected_iid = ""
-        for index, output in enumerate(self.current_processing_outputs):
+        for index, output in enumerate(self._displayed_outputs):
             iid = str(index)
             self.result_tree.insert(
                 "",
                 "end",
                 iid=iid,
+                tags=("odd",) if index % 2 == 1 else (),
                 values=(output.run_name, output.kind, output.label, output.scene_id),
             )
             if selected_output and output.output_file.resolve() == selected_output.resolve():
@@ -1062,6 +1104,7 @@ class ImageryApp(tk.Tk):
 
     def clear_processing_results(self) -> None:
         self.current_processing_outputs = []
+        self._displayed_outputs = []
         self.loaded_processing_run_paths = []
         self.mask_stats_var.set("")
         if hasattr(self, "result_tree"):
@@ -1071,7 +1114,7 @@ class ImageryApp(tk.Tk):
         selection = self.result_tree.selection()
         if not selection:
             return None
-        return self.current_processing_outputs[int(selection[0])]
+        return self._displayed_outputs[int(selection[0])]
 
     def on_processing_result_selected(self, _event: tk.Event) -> None:
         output = self.selected_processing_output()
@@ -1116,6 +1159,119 @@ class ImageryApp(tk.Tk):
         self.status_var.set(f"Extracting refined boundary from {output.label}.")
         worker = threading.Thread(target=self.boundary_worker, args=(output,), daemon=True)
         worker.start()
+
+    def build_all_masks(self) -> None:
+        index_outputs = [o for o in self.current_processing_outputs if o.kind == "Index"]
+        if not index_outputs:
+            self.status_var.set("No index results loaded. Calculate indexes first.")
+            return
+        try:
+            threshold = float(self.mask_threshold_var.get())
+        except ValueError:
+            self.status_var.set("Mask threshold must be a number.")
+            return
+        if threshold < -1 or threshold > 1:
+            self.status_var.set("Mask threshold should be between -1 and 1.")
+            return
+        self.batch_mask_button.configure(state="disabled")
+        self.mask_button.configure(state="disabled")
+        self.status_var.set(
+            f"Building masks for {len(index_outputs)} index result(s) with threshold ≥ {threshold:.3f}."
+        )
+        worker = threading.Thread(
+            target=self._batch_mask_worker, args=(index_outputs, threshold), daemon=True
+        )
+        worker.start()
+
+    def extract_all_boundaries(self) -> None:
+        mask_outputs = [o for o in self.current_processing_outputs if o.kind == "Mask"]
+        if not mask_outputs:
+            self.status_var.set("No mask results loaded. Build masks first.")
+            return
+        self.batch_boundary_button.configure(state="disabled")
+        self.boundary_button.configure(state="disabled")
+        self.status_var.set(f"Extracting boundaries for {len(mask_outputs)} mask(s).")
+        worker = threading.Thread(
+            target=self._batch_boundary_worker, args=(mask_outputs,), daemon=True
+        )
+        worker.start()
+
+    def _batch_mask_worker(self, outputs: list[ProcessingOutput], threshold: float) -> None:
+        results = []
+        failures = []
+        for i, output in enumerate(outputs):
+            self.after(0, self.status_var.set,
+                       f"Building mask {i + 1}/{len(outputs)}: {output.label}...")
+            try:
+                result = build_mask(output, threshold)
+                results.append(result)
+            except Exception as exc:
+                failures.append((output, exc))
+        self.after(0, self._batch_mask_finished, results, failures)
+
+    def _batch_boundary_worker(self, outputs: list[ProcessingOutput]) -> None:
+        results = []
+        failures = []
+        for i, output in enumerate(outputs):
+            self.after(0, self.status_var.set,
+                       f"Extracting boundary {i + 1}/{len(outputs)}: {output.label}...")
+            try:
+                result = extract_boundary(output)
+                results.append(result)
+            except Exception as exc:
+                failures.append((output, exc))
+        self.after(0, self._batch_boundary_finished, results, failures)
+
+    def _batch_mask_finished(
+        self, results: list[MaskResult], failures: list[tuple[ProcessingOutput, Exception]]
+    ) -> None:
+        self.batch_mask_button.configure(state="normal")
+        self.mask_button.configure(state="normal")
+        if failures:
+            details = "\n".join(f"{o.label}: {exc}" for o, exc in failures)
+            self.status_var.set(f"Built {len(results)} mask(s); {len(failures)} failed.")
+            messagebox.showerror("Batch mask failed", details)
+        if not results:
+            return
+        run_paths = self.loaded_processing_run_paths or list({r.run_dir for r in results})
+        self.load_processing_results_for_paths(run_paths)
+        total_area = sum(r.area_km2 for r in results)
+        self.status_var.set(f"Built {len(results)} mask(s). Total area: {total_area:.3f} km².")
+        if not failures:
+            lines = "\n".join(f"  {r.output.label}: {r.area_km2:.3f} km²" for r in results[:10])
+            if len(results) > 10:
+                lines += f"\n  ...and {len(results) - 10} more"
+            messagebox.showinfo(
+                "Batch mask complete",
+                f"Masks built: {len(results)}\nTotal area: {total_area:.3f} km²\n\n{lines}",
+            )
+
+    def _batch_boundary_finished(
+        self, results: list[BoundaryResult], failures: list[tuple[ProcessingOutput, Exception]]
+    ) -> None:
+        self.batch_boundary_button.configure(state="normal")
+        self.boundary_button.configure(state="normal")
+        if failures:
+            details = "\n".join(f"{o.label}: {exc}" for o, exc in failures)
+            self.status_var.set(f"Extracted {len(results)} boundary(ies); {len(failures)} failed.")
+            messagebox.showerror("Batch boundary failed", details)
+        if not results:
+            return
+        run_paths = self.loaded_processing_run_paths or list({r.run_dir for r in results})
+        self.load_processing_results_for_paths(run_paths)
+        total_length = sum(r.boundary_length_km for r in results)
+        self.status_var.set(f"Extracted {len(results)} boundary(ies). Total length: {total_length:.3f} km.")
+        if not failures:
+            lines = "\n".join(
+                f"  {r.output.label}: {r.boundary_length_km:.3f} km, {r.polygon_count} polygon(s)"
+                for r in results[:10]
+            )
+            if len(results) > 10:
+                lines += f"\n  ...and {len(results) - 10} more"
+            messagebox.showinfo(
+                "Batch boundary complete",
+                f"Boundaries extracted: {len(results)}\nTotal length: {total_length:.3f} km\n\n{lines}",
+            )
 
     def build_boundary_overlay(self) -> None:
         base = best_2026_base(self.current_processing_outputs) or best_2026_base_from_rows(self.rows)

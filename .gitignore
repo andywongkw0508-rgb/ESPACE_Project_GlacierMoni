@@ -29,5 +29,8 @@ tmp/
 
 # Tool-specific
 *.codex
-*.claude
 tools/
+doc/
+
+# Claude Code — only ignore local machine-specific settings; keep .md docs tracked
+.claude/settings.local.json
