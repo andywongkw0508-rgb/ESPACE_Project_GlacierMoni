@@ -50,7 +50,7 @@ def compute(
         source.RasterYSize,
         1,
         gdal.GDT_Byte,
-        options=["COMPRESS=DEFLATE", "TILED=YES"],
+        options=["COMPRESS=LZW", "PREDICTOR=2", "TILED=YES"],
     )
     if target is None:
         raise RuntimeError(f"Could not create mask raster: {output_path}")

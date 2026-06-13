@@ -11,6 +11,7 @@ from osgeo import gdal, ogr, osr
 MIN_REGION_PIXELS = 1500
 SMOOTHING_ITERATIONS = 2
 SIMPLIFY_PIXELS = 1.5
+POLYGONIZE_MAX_DIM = 2000  # decimate to this before polygonizing
 
 
 def compute(mask_path: str, boundary_raster_path: str, polygon_path: str, boundary_path: str) -> dict[str, float | int]:
@@ -132,7 +133,7 @@ def write_boundary_raster(source: gdal.Dataset, boundary: np.ndarray, output_pat
         source.RasterYSize,
         1,
         gdal.GDT_Byte,
-        options=["COMPRESS=DEFLATE", "TILED=YES"],
+        options=["COMPRESS=LZW", "PREDICTOR=2", "TILED=YES"],
     )
     if target is None:
         raise RuntimeError(f"Could not create boundary raster: {output_path}")
@@ -145,7 +146,23 @@ def write_boundary_raster(source: gdal.Dataset, boundary: np.ndarray, output_pat
     target.FlushCache()
 
 
+def _decimate_for_polygonize(source: gdal.Dataset) -> gdal.Dataset:
+    """Return a decimated copy when the raster is too large for fast polygonization."""
+    max_dim = max(source.RasterXSize, source.RasterYSize)
+    if max_dim <= POLYGONIZE_MAX_DIM:
+        return source
+    scale = POLYGONIZE_MAX_DIM / max_dim
+    w = max(1, int(source.RasterXSize * scale))
+    h = max(1, int(source.RasterYSize * scale))
+    ds = gdal.Warp("", source, format="MEM", width=w, height=h,
+                   resampleAlg=gdal.GRA_NearestNeighbour)
+    if ds is None:
+        return source
+    return ds
+
+
 def polygonize_mask(source: gdal.Dataset, output_path: str) -> int:
+    work = _decimate_for_polygonize(source)
     driver = ogr.GetDriverByName("GeoJSON")
     if driver is None:
         raise RuntimeError("GeoJSON driver is not available in GDAL/OGR.")
@@ -160,7 +177,7 @@ def polygonize_mask(source: gdal.Dataset, output_path: str) -> int:
     layer.CreateField(ogr.FieldDefn("value", ogr.OFTInteger))
     layer.CreateField(ogr.FieldDefn("area_m2", ogr.OFTReal))
 
-    band = source.GetRasterBand(1)
+    band = work.GetRasterBand(1)
     gdal.Polygonize(band, band, layer, 0, [], callback=None)
 
     layer.ResetReading()
@@ -171,7 +188,7 @@ def polygonize_mask(source: gdal.Dataset, output_path: str) -> int:
             continue
         geometry = feature.GetGeometryRef()
         if geometry is not None:
-            simplified = simplify_geometry(geometry, source)
+            simplified = simplify_geometry(geometry, work)
             feature.SetGeometry(simplified)
             feature.SetField("area_m2", float(simplified.GetArea()))
             layer.SetFeature(feature)

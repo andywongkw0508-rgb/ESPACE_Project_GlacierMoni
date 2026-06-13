@@ -201,7 +201,9 @@ def gdal_warp(
         resampleAlg=resampling,
         srcNodata=0,
         dstNodata=0,
-        creationOptions=["COMPRESS=DEFLATE", "TILED=YES"],
+        multithread=True,
+        warpOptions=["NUM_THREADS=ALL_CPUS"],
+        creationOptions=["COMPRESS=LZW", "PREDICTOR=2", "TILED=YES"],
     )
     ds = gdal.Warp(str(output), str(source), options=options)
     if ds is None or not output.exists():
