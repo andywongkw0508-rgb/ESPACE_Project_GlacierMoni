@@ -3,14 +3,28 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
 
+from .constants import _C_SIDEBAR
 from ..config import DATA_ROOT, DEFAULT_PREVIEW_SCENE_ID, MANIFEST
 
 
 class FiltersMixin:
     def build_filters(self, parent: ttk.PanedWindow) -> None:
-        panel = ttk.Frame(parent, style="Sidebar.TFrame", padding=(14, 16, 14, 16), width=244)
-        panel.pack_propagate(False)
-        parent.add(panel, weight=0)
+        shell = ttk.Frame(parent, style="Sidebar.TFrame", width=244)
+        shell.pack_propagate(False)
+        shell.rowconfigure(0, weight=1)
+        shell.columnconfigure(0, weight=1)
+        parent.add(shell, weight=0)
+
+        canvas = tk.Canvas(shell, bg=_C_SIDEBAR, highlightthickness=0, yscrollincrement=24)
+        filter_scroll = ttk.Scrollbar(shell, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=filter_scroll.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        filter_scroll.grid(row=0, column=1, sticky="ns")
+
+        panel = ttk.Frame(canvas, style="Sidebar.TFrame", padding=(14, 16, 14, 16))
+        window_id = canvas.create_window((0, 0), window=panel, anchor="nw")
+        canvas.bind("<Configure>", lambda event: self._resize_filter_scroll_window(canvas, window_id, event))
+        panel.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
 
         ttk.Label(panel, text="Filters", style="Sidebar.Bold.TLabel").pack(anchor="w")
         ttk.Label(
@@ -55,6 +69,10 @@ class FiltersMixin:
         self.metric_total = ttk.Label(panel, text="0", style="Metric.TLabel")
         self.metric_total.pack(anchor="w")
         ttk.Label(panel, text="matching scenes", style="Sidebar.Muted.TLabel").pack(anchor="w")
+
+    def _resize_filter_scroll_window(self, canvas: tk.Canvas, window_id: int, event: tk.Event) -> None:
+        canvas.itemconfigure(window_id, width=max(1, event.width))
+        canvas.configure(scrollregion=canvas.bbox("all"))
 
     def add_combo(
         self,

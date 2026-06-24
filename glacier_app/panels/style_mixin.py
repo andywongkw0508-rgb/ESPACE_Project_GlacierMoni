@@ -14,9 +14,11 @@ from .constants import (
 
 class StyleMixin:
     def configure_style(self) -> None:
+        self._ui_scale = 1.0
         self.configure(bg=_C_APP_BG)
         s = ttk.Style(self)
         s.theme_use("clam")
+        self._style = s
 
         # frames
         s.configure("TFrame",         background=_C_APP_BG)
@@ -151,3 +153,40 @@ class StyleMixin:
         s.map("Sidebar.Treeview",
             background=[("selected", _C_ACCENT)],
             foreground=[("selected", "white")])
+
+    def configure_scaled_style(self, scale: float) -> None:
+        self._ui_scale = scale
+        s = getattr(self, "_style", ttk.Style(self))
+
+        def font(size: int, weight: str | None = None) -> tuple:
+            scaled = max(7, int(round(size * scale)))
+            return (_UI_FONT, scaled, weight) if weight else (_UI_FONT, scaled)
+
+        def pad(x: int, y: int) -> tuple[int, int]:
+            return (max(3, int(round(x * scale))), max(2, int(round(y * scale))))
+
+        s.configure("TLabel", font=font(10))
+        s.configure("Card.TLabel", font=font(10))
+        s.configure("Card.Muted.TLabel", font=font(9))
+        s.configure("AppTitle.TLabel", font=font(17, "bold"))
+        s.configure("AppSub.TLabel", font=font(10))
+        s.configure("Metric.TLabel", font=font(22, "bold"))
+        s.configure("Sidebar.TLabel", font=font(10))
+        s.configure("Sidebar.Muted.TLabel", font=font(9))
+        s.configure("Sidebar.Bold.TLabel", font=font(13, "bold"))
+        s.configure("Sidebar.Sub.TLabel", font=font(11, "bold"))
+        s.configure("Status.TLabel", font=font(9))
+
+        s.configure("TButton", font=font(10), padding=pad(10, 6))
+        s.configure("Accent.TButton", font=font(10, "bold"), padding=pad(12, 7))
+        s.configure("Danger.TButton", font=font(10), padding=pad(10, 6))
+        s.configure("Sidebar.TButton", font=font(9), padding=pad(8, 5))
+        s.configure("SidebarAccent.TButton", font=font(9, "bold"), padding=pad(8, 5))
+        s.configure("TNotebook.Tab", padding=pad(12, 5), font=font(9))
+        s.configure("Treeview", font=font(9), rowheight=max(18, int(round(26 * scale))))
+        s.configure("Treeview.Heading", font=font(9, "bold"))
+        s.configure("Sidebar.Treeview", font=font(9), rowheight=max(17, int(round(22 * scale))))
+        s.configure("Sidebar.Treeview.Heading", font=font(8, "bold"))
+        s.configure("Step.Active.TLabel", font=font(9, "bold"))
+        s.configure("Step.Done.TLabel", font=font(9))
+        s.configure("Step.Inactive.TLabel", font=font(9))

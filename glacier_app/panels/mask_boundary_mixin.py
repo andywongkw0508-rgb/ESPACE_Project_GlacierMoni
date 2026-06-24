@@ -254,7 +254,7 @@ class MaskBoundaryMixin:
             return
         if result is None:
             return
-        self.preview.show_image(str(result.output_file), preserve_view=False)
+        self.preview.show_image(str(result.output_file), preserve_view=False, coordinate_source=result.base_file)
         self.preview_tabs.select(1)
         years = ", ".join(result.years)
         self.mask_stats_var.set(f"Overlay: {years}")

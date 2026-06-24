@@ -3,14 +3,34 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
 
-from .constants import _UI_FONT, _C_TREE_ALT
+from .constants import _UI_FONT, _C_TREE_ALT, _C_CARD
 from ..config import SENTINEL_PREPROCESS_RESOLUTIONS
 
 
 class WorkflowMixin:
     def build_workflow_panel(self, parent: ttk.PanedWindow) -> None:
-        panel = ttk.Frame(parent, style="Card.TFrame", padding=14)
-        parent.add(panel, weight=1)
+        shell = ttk.Frame(parent, style="Card.TFrame")
+        parent.add(shell, weight=1)
+        shell.rowconfigure(0, weight=1)
+        shell.columnconfigure(0, weight=1)
+
+        canvas = tk.Canvas(
+            shell,
+            bg=_C_CARD,
+            highlightthickness=0,
+            yscrollincrement=24,
+        )
+        workflow_scroll = ttk.Scrollbar(shell, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=workflow_scroll.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        workflow_scroll.grid(row=0, column=1, sticky="ns")
+
+        panel = ttk.Frame(canvas, style="Card.TFrame", padding=14)
+        window_id = canvas.create_window((0, 0), window=panel, anchor="nw")
+        canvas.bind("<Configure>", lambda event: self._resize_workflow_scroll_window(canvas, window_id, event))
+        panel.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
+        panel.bind("<Enter>", lambda _event: self._bind_workflow_mousewheel(canvas))
+        panel.bind("<Leave>", lambda _event: self._unbind_workflow_mousewheel())
         panel.columnconfigure(0, weight=1)
 
         # ── Scene Inventory ──────────────────────────────────────────────────
@@ -131,6 +151,24 @@ class WorkflowMixin:
             row=2, column=0, columnspan=2, sticky="ew")
 
         self.refresh_preprocess_runs()
+
+    def _resize_workflow_scroll_window(self, canvas: tk.Canvas, window_id: int, event: tk.Event) -> None:
+        canvas.itemconfigure(window_id, width=max(1, event.width))
+        canvas.configure(scrollregion=canvas.bbox("all"))
+
+    def _bind_workflow_mousewheel(self, canvas: tk.Canvas) -> None:
+        canvas.bind_all("<MouseWheel>", lambda event: self._scroll_workflow_canvas(canvas, event))
+        canvas.bind_all("<Button-4>", lambda event: canvas.yview_scroll(-1, "units"))
+        canvas.bind_all("<Button-5>", lambda event: canvas.yview_scroll(1, "units"))
+
+    def _unbind_workflow_mousewheel(self) -> None:
+        self.unbind_all("<MouseWheel>")
+        self.unbind_all("<Button-4>")
+        self.unbind_all("<Button-5>")
+
+    def _scroll_workflow_canvas(self, canvas: tk.Canvas, event: tk.Event) -> None:
+        if event.delta:
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
     def _on_run_selected(self, _event: tk.Event) -> None:
         pass
