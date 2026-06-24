@@ -43,6 +43,7 @@ SENTINEL_BANDS = [
     ("blue_B02", "Blue B02", "raw_blue_B02_url"),
     ("green_B03", "Green B03", "raw_green_B03_url"),
     ("red_B04", "Red B04", "raw_red_B04_url"),
+    ("red_edge_B05", "Red Edge B05", "raw_red_edge_B05_url"),
     ("nir_B08", "NIR B08", "raw_nir_B08_url"),
     ("swir_B11", "SWIR B11", "raw_swir_B11_url"),
     ("scene_classification_SCL", "SCL", "raw_scene_classification_SCL_url"),

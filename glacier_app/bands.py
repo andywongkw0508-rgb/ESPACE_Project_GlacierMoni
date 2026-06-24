@@ -14,6 +14,7 @@ def available_band_labels(row: dict[str, str]) -> list[str]:
         "raw_blue_B02_url": "Sentinel blue B02",
         "raw_green_B03_url": "Sentinel green B03",
         "raw_red_B04_url": "Sentinel red B04",
+        "raw_red_edge_B05_url": "Sentinel red-edge B05",
         "raw_nir_B08_url": "Sentinel NIR B08",
         "raw_swir_B11_url": "Sentinel SWIR B11",
         "raw_scene_classification_SCL_url": "Sentinel SCL",

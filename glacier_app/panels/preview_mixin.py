@@ -49,7 +49,7 @@ class PreviewMixin:
         self.preview_canvas.bind("<MouseWheel>", self.preview.mousewheel)
         self.preview_canvas.bind("<Button-4>", lambda event: self.preview.zoom_by(1))
         self.preview_canvas.bind("<Button-5>", lambda event: self.preview.zoom_by(-1))
-        self.preview_canvas.bind("<Configure>", lambda _event: self.preview.center_if_needed())
+        self.preview_canvas.bind("<Configure>", lambda _event: self.preview.on_canvas_configure())
 
         self.preview_tabs = ttk.Notebook(panel)
         self.preview_tabs.grid(row=3, column=0, sticky="ew")
@@ -186,8 +186,22 @@ class PreviewMixin:
     def show_scene(self, row: dict[str, str]) -> None:
         self.current_scene_row = row
         self.update_band_checker(row)
-        self.preview.show_image(row.get("preview_path", ""), preserve_view=False)
+        preview_path = row.get("preview_path", "")
+        self.preview.show_image(
+            preview_path,
+            preserve_view=False,
+            coordinate_source=self.scene_coordinate_sources(preview_path),
+        )
         self.show_details_text(self.scene_details(row))
+
+    def scene_coordinate_sources(self, preview_path: str) -> list[str]:
+        sources = [preview_path] if preview_path else []
+        sources.extend(
+            str(check.get("matched_path", ""))
+            for check in self.current_band_checks
+            if check.get("matched_path")
+        )
+        return sources
 
     def show_details_text(self, text: str) -> None:
         pass
@@ -251,5 +265,5 @@ class PreviewMixin:
         except RuntimeError as exc:
             self.status_var.set(str(exc))
             return
-        self.preview.show_image(str(preview_path), preserve_view=True)
+        self.preview.show_image(str(preview_path), preserve_view=True, coordinate_source=band_path)
         self.status_var.set(f"Showing {check.get('label', 'band')} — {band_path}")
