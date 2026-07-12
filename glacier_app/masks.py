@@ -188,9 +188,12 @@ def write_mask_manifest(
 def exclusion_inputs(run_dir: Path, output: ProcessingOutput) -> ExclusionInputs:
     if output.label.upper() != "NDSI":
         return ExclusionInputs(sensor=output.sensor)
+    quality_file = matching_quality_file(run_dir, output.scene_id, output.sensor)
     return ExclusionInputs(
-        water_file=matching_index_file(run_dir, output.scene_id, "NDWI"),
-        quality_file=matching_quality_file(run_dir, output.scene_id, output.sensor),
+        # SCL/QA distinguishes known water from cloud/unknown observations.
+        # NDWI remains the fallback for scenes without a quality band.
+        water_file=None if quality_file else matching_index_file(run_dir, output.scene_id, "NDWI"),
+        quality_file=quality_file,
         sensor=output.sensor,
     )
 

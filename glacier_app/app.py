@@ -61,6 +61,9 @@ class ImageryApp(
         self.loaded_processing_run_paths: list[Path] = []
         self._displayed_outputs: list[ProcessingOutput] = []
         self._preview_request_id = 0
+        self.current_sea_level_result = None
+        self.current_sea_temperature_result = None
+        self._dashboard_windows: list[tk.Toplevel] = []
 
         # ── ui variables ────────────────────────────────────────────────────
         self.sensor_var              = tk.StringVar(value="All sensors")
@@ -149,6 +152,24 @@ class ImageryApp(
             command=self.open_dashboard,
         )
         self.toolbar_buttons.append(self.dashboard_button)
+        self.glacier_retreat_button = ttk.Button(
+            self.toolbar,
+            text="Glacier Retreat",
+            command=self.compare_glacier_retreat_boundaries,
+        )
+        self.toolbar_buttons.append(self.glacier_retreat_button)
+        self.sea_level_button = ttk.Button(
+            self.toolbar,
+            text="Sea Level",
+            command=self.import_sea_level_from_copernicus,
+        )
+        self.toolbar_buttons.append(self.sea_level_button)
+        self.sea_temperature_button = ttk.Button(
+            self.toolbar,
+            text="Temperature Map",
+            command=self.create_remote_sensing_temperature_map,
+        )
+        self.toolbar_buttons.append(self.sea_temperature_button)
         self._layout_top_toolbar(1360)
 
     def _layout_top_toolbar(self, width: int) -> None:
@@ -156,12 +177,16 @@ class ImageryApp(
             return
         for button in self.toolbar_buttons:
             button.grid_forget()
-        for column in range(5):
+        for column in range(max(1, len(self.toolbar_buttons))):
             self.toolbar.columnconfigure(column, weight=0)
 
         columns = max(1, len(self.toolbar_buttons))
         if width < 520:
             columns = 1
+        elif width < 860:
+            columns = 3
+        elif width < 1180:
+            columns = 4
         for index, button in enumerate(self.toolbar_buttons):
             row = index // columns
             column = index % columns

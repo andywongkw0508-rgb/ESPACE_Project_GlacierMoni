@@ -28,6 +28,9 @@ class BoundaryResult:
     refined_pixels: int
     boundary_pixels: int
     polygon_count: int
+    source_region_count: int
+    removed_region_count: int
+    largest_region_share: float
     boundary_count: int
     boundary_length_m: float
     boundary_length_km: float
@@ -39,6 +42,8 @@ class BoundaryResult:
 def extract_boundary(output: ProcessingOutput) -> BoundaryResult:
     if output.kind != "Mask":
         raise ValueError("Boundaries can currently be extracted from mask rasters.")
+    if "NDSI" not in output.label.upper() and "NDSI" not in output.formula.upper():
+        raise ValueError("Glacier boundaries must be extracted from an NDSI mask, not a water mask.")
     if not output.output_file.exists():
         raise FileNotFoundError(f"Source mask raster does not exist: {output.output_file}")
 
@@ -60,7 +65,7 @@ def extract_boundary(output: ProcessingOutput) -> BoundaryResult:
         scene_id=output.scene_id,
         date=output.date,
         sensor=output.sensor,
-        formula=f"Boundary of {output.formula or output.label}",
+        formula=f"Dominant connected exterior boundary of {output.formula or output.label}",
         output_file=boundary_raster,
         pixel_count=int(stats["boundary_pixels"]),
         area_km2=output.area_km2,
@@ -73,6 +78,9 @@ def extract_boundary(output: ProcessingOutput) -> BoundaryResult:
         refined_pixels=int(stats.get("refined_pixels", 0)),
         boundary_pixels=int(stats["boundary_pixels"]),
         polygon_count=int(stats["polygon_count"]),
+        source_region_count=int(stats.get("source_region_count", stats["polygon_count"])),
+        removed_region_count=int(stats.get("removed_region_count", 0)),
+        largest_region_share=float(stats.get("largest_region_share", 1.0)),
         boundary_count=int(stats["boundary_count"]),
         boundary_length_m=float(stats["boundary_length_m"]),
         boundary_length_km=float(stats["boundary_length_km"]),
@@ -121,6 +129,9 @@ def write_boundary_manifest(
         "refined_pixels",
         "boundary_pixels",
         "polygon_count",
+        "source_region_count",
+        "removed_region_count",
+        "largest_region_share",
         "boundary_count",
         "boundary_length_m",
         "boundary_length_km",
@@ -148,6 +159,9 @@ def write_boundary_manifest(
             "refined_pixels": str(int(stats.get("refined_pixels", 0))),
             "boundary_pixels": str(int(stats["boundary_pixels"])),
             "polygon_count": str(int(stats["polygon_count"])),
+            "source_region_count": str(int(stats.get("source_region_count", stats["polygon_count"]))),
+            "removed_region_count": str(int(stats.get("removed_region_count", 0))),
+            "largest_region_share": f"{float(stats.get('largest_region_share', 1.0)):.6f}",
             "boundary_count": str(int(stats["boundary_count"])),
             "boundary_length_m": f"{float(stats['boundary_length_m']):.6f}",
             "boundary_length_km": f"{float(stats['boundary_length_km']):.6f}",

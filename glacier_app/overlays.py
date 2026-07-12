@@ -28,6 +28,8 @@ YEAR_COLORS = [
     (215,  48,  39),  # red         — newest
 ]
 MAX_OVERLAY_DIMENSION = 1800
+MIN_BOUNDARY_LINE_RADIUS = 1
+MAX_BOUNDARY_LINE_RADIUS = 1
 LEGEND_ROW_HEIGHT = 34
 LEGEND_PADDING = 14
 LEGEND_SWATCH_SIZE = 14
@@ -62,9 +64,12 @@ def build_year_boundary_overlay(base: ProcessingOutput, boundaries: list[Process
     if not base.output_file.exists():
         raise FileNotFoundError(f"Base raster does not exist: {base.output_file}")
 
-    usable_boundaries = [item for item in boundaries if item.output_file.exists()]
+    usable_boundaries = [
+        item for item in boundaries
+        if item.output_file.exists() and "NDSI" in item.label.upper()
+    ]
     if not usable_boundaries:
-        raise FileNotFoundError("No boundary raster files are available for overlay.")
+        raise FileNotFoundError("No NDSI glacier-boundary raster files are available for overlay.")
 
     base_ds = gdal.Open(str(base.output_file))
     if base_ds is None:
@@ -77,7 +82,7 @@ def build_year_boundary_overlay(base: ProcessingOutput, boundaries: list[Process
         mask = boundary_mask(boundary, display_ds)
         if not mask.any():
             continue
-        mask = thicken(mask, radius=1)
+        mask = thicken(mask, radius=boundary_line_radius(display_ds))
         color = year_colors[year_for(boundary)]
         for band_index, value in enumerate(color):
             rgb[band_index][mask] = value
@@ -185,10 +190,23 @@ def text_width(text: str, scale: int) -> int:
 
 
 def boundary_mask(boundary: ProcessingOutput, base_ds: gdal.Dataset) -> np.ndarray:
+    masks: list[np.ndarray] = []
     vector_file = boundary.output_file.with_suffix(".geojson")
     if vector_file.exists():
-        return rasterized_boundary_mask(vector_file, base_ds)
-    return warped_boundary_mask(boundary.output_file, base_ds)
+        masks.append(rasterized_boundary_mask(vector_file, base_ds))
+    if boundary.output_file.exists():
+        masks.append(warped_boundary_mask(boundary.output_file, base_ds))
+    if not masks:
+        return np.zeros((base_ds.RasterYSize, base_ds.RasterXSize), dtype=bool)
+    combined = masks[0].copy()
+    for mask in masks[1:]:
+        combined |= mask
+    return combined
+
+
+def boundary_line_radius(dataset: gdal.Dataset) -> int:
+    scaled = int(round(max(dataset.RasterXSize, dataset.RasterYSize) / 500.0))
+    return max(MIN_BOUNDARY_LINE_RADIUS, min(MAX_BOUNDARY_LINE_RADIUS, scaled))
 
 
 def display_dataset(dataset: gdal.Dataset) -> gdal.Dataset:
@@ -324,7 +342,9 @@ def warped_boundary_mask(boundary_file: Path, base_ds: gdal.Dataset) -> np.ndarr
         height=height,
         outputBounds=bounds,
         dstSRS=base_ds.GetProjection(),
-        resampleAlg=gdal.GRA_NearestNeighbour,
+        srcNodata=0,
+        dstNodata=0,
+        resampleAlg=getattr(gdal, "GRA_Max", gdal.GRA_NearestNeighbour),
     )
     if warped is None:
         raise RuntimeError(f"Could not warp boundary raster: {boundary_file}")

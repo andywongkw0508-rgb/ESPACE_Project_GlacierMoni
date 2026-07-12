@@ -3,6 +3,7 @@ from __future__ import annotations
 import tkinter as tk
 from dataclasses import dataclass
 from fractions import Fraction
+import math
 from pathlib import Path
 from tkinter import ttk
 from typing import Any
@@ -94,9 +95,16 @@ def build_project_transform(source_projection: str) -> Any | None:
 
 
 class PreviewController:
-    def __init__(self, canvas: tk.Canvas, zoom_label: ttk.Label) -> None:
+    def __init__(
+        self,
+        canvas: tk.Canvas,
+        zoom_label: ttk.Label,
+        show_coordinates: bool = True,
+        zoom_levels: tuple[int, ...] | None = None,
+    ) -> None:
         self.canvas = canvas
         self.zoom_label = zoom_label
+        self.show_coordinates = show_coordinates
         self.original_image: tk.PhotoImage | None = None
         self.preview_image: tk.PhotoImage | None = None
         self.canvas_image_id: int | None = None
@@ -105,12 +113,15 @@ class PreviewController:
         self.coordinate_mapper: RasterCoordinateMapper | None = None
         self.coordinate_text_id: int | None = None
         self.coordinate_bg_id: int | None = None
+        self.scale_item_ids: list[int] = []
         self.coordinate_text = self.empty_coordinate_text()
         self._pending_fit_after_layout = False
         self._auto_fit = False
         self._last_fit_size: tuple[int, int] = (0, 0)
-        self.canvas.bind("<Motion>", self.update_coordinate_from_event, add="+")
-        self.canvas.bind("<Leave>", lambda _event: self.set_coordinate_text(self.empty_coordinate_text()), add="+")
+        self.zoom_levels = zoom_levels or (10, 15, 20, 25, 33, 50, 67, 100, 150, 200, 300, 400)
+        if self.show_coordinates:
+            self.canvas.bind("<Motion>", self.update_coordinate_from_event, add="+")
+            self.canvas.bind("<Leave>", lambda _event: self.set_coordinate_text(self.empty_coordinate_text()), add="+")
 
     def show_image(
         self,
@@ -127,12 +138,18 @@ class PreviewController:
             self._resample_cache.clear()
             self.canvas.delete("all")
             self.reset_coordinate_items()
+            self.reset_scale_items()
             self.canvas.create_text(170, 130, text="Preview image is not available.", fill="#617078")
-            self.set_coordinate_text(self.empty_coordinate_text())
+            if self.show_coordinates:
+                self.set_coordinate_text(self.empty_coordinate_text())
             return False
 
         self.original_image = tk.PhotoImage(file=str(path))
-        self.coordinate_mapper = self.build_coordinate_mapper(coordinate_source, coordinate_region)
+        self.coordinate_mapper = (
+            self.build_coordinate_mapper(coordinate_source, coordinate_region)
+            if self.show_coordinates
+            else None
+        )
         self.coordinate_text = self.empty_coordinate_text()
         self._resample_cache.clear()
         self._auto_fit = not preserve_view
@@ -152,8 +169,10 @@ class PreviewController:
         self._resample_cache.clear()
         self.canvas.delete("all")
         self.reset_coordinate_items()
+        self.reset_scale_items()
         self.canvas.create_text(170, 130, text=text, fill="#617078")
-        self.set_coordinate_text(self.empty_coordinate_text())
+        if self.show_coordinates:
+            self.set_coordinate_text(self.empty_coordinate_text())
 
     def build_coordinate_mapper(
         self,
@@ -207,7 +226,7 @@ class PreviewController:
         if not self.original_image:
             return
         self._auto_fit = False
-        levels = [10, 15, 20, 25, 33, 50, 67, 100, 150, 200, 300, 400]
+        levels = self.zoom_levels
         nearest_index = min(range(len(levels)), key=lambda index: abs(levels[index] - self.zoom))
         next_index = max(0, min(len(levels) - 1, nearest_index + direction))
         self.zoom = levels[next_index]
@@ -232,6 +251,7 @@ class PreviewController:
 
         self.canvas.delete("all")
         self.reset_coordinate_items()
+        self.reset_scale_items()
         if center:
             x = canvas_width // 2
             y = canvas_height // 2
@@ -243,7 +263,9 @@ class PreviewController:
         if bounds:
             self.canvas.configure(scrollregion=bounds)
         self.zoom_label.configure(text=f"{self.zoom}%")
-        self.draw_coordinate_label()
+        if self.show_coordinates:
+            self.draw_coordinate_label()
+            self.draw_scale_bar()
 
     def resample(self, image: tk.PhotoImage, zoom_percent: int) -> tk.PhotoImage:
         cached = self._resample_cache.get(zoom_percent)
@@ -269,8 +291,10 @@ class PreviewController:
 
     def move_pan(self, event: tk.Event) -> None:
         self.canvas.scan_dragto(event.x, event.y, gain=1)
-        self.position_coordinate_label()
-        self.update_coordinate_from_event(event)
+        if self.show_coordinates:
+            self.position_coordinate_label()
+            self.draw_scale_bar()
+            self.update_coordinate_from_event(event)
 
     def mousewheel(self, event: tk.Event) -> None:
         self.zoom_by(1 if event.delta > 0 else -1)
@@ -282,12 +306,12 @@ class PreviewController:
             size = (max(1, self.canvas.winfo_width()), max(1, self.canvas.winfo_height()))
             if size != self._last_fit_size:
                 self.fit()
-            else:
-                self.position_coordinate_label()
+            elif self.show_coordinates:
+                self.position_overlay_items()
         elif self.canvas_image_id is None and self.original_image:
             self.fit()
-        else:
-            self.position_coordinate_label()
+        elif self.show_coordinates:
+            self.position_overlay_items()
 
     def center_if_needed(self) -> None:
         self.on_canvas_configure()
@@ -299,7 +323,23 @@ class PreviewController:
         self.coordinate_text_id = None
         self.coordinate_bg_id = None
 
+    def reset_scale_items(self) -> None:
+        self.scale_item_ids = []
+
+    def clear_scale_bar(self) -> None:
+        for item_id in self.scale_item_ids:
+            self.canvas.delete(item_id)
+        self.reset_scale_items()
+
+    def position_overlay_items(self) -> None:
+        if not self.show_coordinates:
+            return
+        self.position_coordinate_label()
+        self.draw_scale_bar()
+
     def draw_coordinate_label(self) -> None:
+        if not self.show_coordinates:
+            return
         if self.coordinate_bg_id is None:
             self.coordinate_bg_id = self.canvas.create_rectangle(
                 0,
@@ -341,11 +381,165 @@ class PreviewController:
             self.canvas.tag_raise(self.coordinate_bg_id)
             self.canvas.tag_raise(self.coordinate_text_id)
 
+    def draw_scale_bar(self) -> None:
+        if not self.show_coordinates:
+            return
+        self.clear_scale_bar()
+        bounds = self.visible_map_bounds()
+        if bounds is None:
+            return
+        left, top, right, bottom = bounds
+        available_width = right - left
+        available_height = bottom - top
+        if available_width < 70 or available_height < 44:
+            return
+        max_bar_width = min(180.0, available_width * 0.34)
+        info = self.scale_bar_info(max_bar_width)
+        if info is None:
+            return
+        bar_width, label = info
+        margin = 12
+        x2 = right - margin
+        x1 = x2 - bar_width
+        y = bottom - margin
+        label_y = y - 8
+        tick = 6
+        if x1 < left + margin:
+            return
+
+        line_id = self.canvas.create_line(x1, y, x2, y, fill="#1f2d33", width=3)
+        left_tick_id = self.canvas.create_line(x1, y - tick, x1, y + tick, fill="#1f2d33", width=2)
+        right_tick_id = self.canvas.create_line(x2, y - tick, x2, y + tick, fill="#1f2d33", width=2)
+        label_id = self.canvas.create_text(
+            (x1 + x2) / 2,
+            label_y,
+            text=label,
+            fill="#1f2d33",
+            anchor="s",
+            font=("Segoe UI", 9, "bold"),
+        )
+        content_ids = [line_id, left_tick_id, right_tick_id, label_id]
+        bbox = self.canvas.bbox(*content_ids)
+        if bbox is None:
+            self.scale_item_ids = content_ids
+            return
+        pad = 5
+        bg_id = self.canvas.create_rectangle(
+            bbox[0] - pad,
+            bbox[1] - pad,
+            bbox[2] + pad,
+            bbox[3] + pad,
+            fill="#f4f8f9",
+            outline="#d4dde1",
+        )
+        self.canvas.tag_lower(bg_id, line_id)
+        self.scale_item_ids = [bg_id, *content_ids]
+        for item_id in self.scale_item_ids:
+            self.canvas.tag_raise(item_id)
+
+    def visible_map_bounds(self) -> tuple[float, float, float, float] | None:
+        if (
+            self.original_image is None
+            or self.preview_image is None
+            or self.canvas_image_id is None
+            or self.coordinate_mapper is None
+        ):
+            return None
+        coords = self.canvas.coords(self.canvas_image_id)
+        if len(coords) < 2:
+            return None
+        display_width = self.preview_image.width()
+        display_height = self.preview_image.height()
+        if display_width <= 0 or display_height <= 0:
+            return None
+        image_left = coords[0] - display_width / 2
+        image_top = coords[1] - display_height / 2
+        x_scale = display_width / max(1, self.original_image.width())
+        y_scale = display_height / max(1, self.original_image.height())
+        mapper = self.coordinate_mapper
+        region_left = image_left + mapper.preview_x * x_scale
+        region_top = image_top + mapper.preview_y * y_scale
+        region_right = image_left + (mapper.preview_x + mapper.preview_width) * x_scale
+        region_bottom = image_top + (mapper.preview_y + mapper.preview_height) * y_scale
+
+        viewport_left = self.canvas.canvasx(0)
+        viewport_top = self.canvas.canvasy(0)
+        viewport_right = self.canvas.canvasx(max(1, self.canvas.winfo_width()))
+        viewport_bottom = self.canvas.canvasy(max(1, self.canvas.winfo_height()))
+        left = max(region_left, viewport_left)
+        top = max(region_top, viewport_top)
+        right = min(region_right, viewport_right)
+        bottom = min(region_bottom, viewport_bottom)
+        if left >= right or top >= bottom:
+            return None
+        return left, top, right, bottom
+
+    def scale_bar_info(self, max_bar_width: float) -> tuple[float, str] | None:
+        meters_per_display_pixel = self.meters_per_display_pixel()
+        if meters_per_display_pixel is None or meters_per_display_pixel <= 0:
+            return None
+        max_distance = meters_per_display_pixel * max_bar_width
+        length_meters = self.nice_scale_length(max_distance)
+        if length_meters is None or length_meters <= 0:
+            return None
+        bar_width = length_meters / meters_per_display_pixel
+        if bar_width < 40:
+            return None
+        return bar_width, self.format_scale_length(length_meters)
+
+    def meters_per_display_pixel(self) -> float | None:
+        if self.original_image is None or self.preview_image is None or self.coordinate_mapper is None:
+            return None
+        mapper = self.coordinate_mapper
+        sample_width = min(100.0, mapper.preview_width * 0.5)
+        if sample_width <= 0:
+            return None
+        sample_y = mapper.preview_y + mapper.preview_height * 0.5
+        sample_x = mapper.preview_x + (mapper.preview_width - sample_width) * 0.5
+        left_coordinate = mapper.coordinate_at(sample_x, sample_y)
+        right_coordinate = mapper.coordinate_at(sample_x + sample_width, sample_y)
+        if left_coordinate is None or right_coordinate is None:
+            return None
+        dx = right_coordinate[0] - left_coordinate[0]
+        dy = right_coordinate[1] - left_coordinate[1]
+        meters_per_preview_pixel = math.hypot(dx, dy) / sample_width
+        display_pixels_per_preview_pixel = self.preview_image.width() / max(1, self.original_image.width())
+        if display_pixels_per_preview_pixel <= 0:
+            return None
+        return meters_per_preview_pixel / display_pixels_per_preview_pixel
+
+    @staticmethod
+    def nice_scale_length(max_distance: float) -> float | None:
+        if max_distance <= 0:
+            return None
+        exponent = math.floor(math.log10(max_distance))
+        for factor in (5, 2, 1):
+            candidate = factor * (10 ** exponent)
+            if candidate <= max_distance:
+                return float(candidate)
+        return 5.0 * (10 ** (exponent - 1))
+
+    @staticmethod
+    def format_scale_length(meters: float) -> str:
+        if meters >= 1000:
+            kilometers = meters / 1000
+            if kilometers >= 10 or kilometers.is_integer():
+                return f"{kilometers:.0f} km"
+            return f"{kilometers:g} km"
+        if meters >= 1:
+            if meters >= 10 or meters.is_integer():
+                return f"{meters:.0f} m"
+            return f"{meters:g} m"
+        return f"{meters * 100:.0f} cm"
+
     def set_coordinate_text(self, text: str) -> None:
         self.coordinate_text = text
-        self.draw_coordinate_label()
+        if self.show_coordinates:
+            self.draw_coordinate_label()
 
     def update_coordinate_from_event(self, event: tk.Event) -> None:
+        if not self.show_coordinates:
+            return
         coordinate = self.coordinate_at_canvas_point(event.x, event.y)
         if coordinate is None:
             self.set_coordinate_text(self.empty_coordinate_text())
@@ -354,6 +548,8 @@ class PreviewController:
         self.set_coordinate_text(f"{PREPROCESS_TARGET_CRS}  E {x:.1f}  N {y:.1f}")
 
     def coordinate_at_canvas_point(self, event_x: int, event_y: int) -> tuple[float, float] | None:
+        if not self.show_coordinates:
+            return None
         if (
             self.original_image is None
             or self.preview_image is None
