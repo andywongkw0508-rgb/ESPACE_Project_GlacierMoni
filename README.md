@@ -38,7 +38,7 @@ cd ESPACE_Project_GlacierMoni
 ### Step 2 — Create the conda environment
 
 ```bash
-conda env create -f environment.yml
+conda env create -f Func/environment.yml
 conda activate glacier-monitoring
 ```
 
@@ -101,7 +101,7 @@ GLACIER_DATA_ROOT=C:/Users/yourname/data/vatnajokull
 The app reads `master_manifest.csv` from `DATA_ROOT`. Generate it by scanning your downloaded TIF files:
 
 ```bash
-python generate_manifest.py
+python Func/generate_manifest.py
 ```
 
 Expected output:
@@ -127,14 +127,14 @@ The window opens showing all scenes from the manifest. Use the filters on the le
 The dashboard can be extended with sea surface height data from Copernicus Marine. The helper script downloads daily sea surface height above geoid (`zos`) for the project AOI and the project period.
 
 ```bash
-conda env update -f environment.yml
+conda env update -f Func/environment.yml
 conda activate glacier-monitoring
 
 # First run this to inspect the request
-python download_sea_level.py --dry-run
+python Func/download_sea_level.py --dry-run
 
 # Then download the NetCDF file
-python download_sea_level.py
+python Func/download_sea_level.py
 ```
 
 Default request:
@@ -152,7 +152,7 @@ The Copernicus Marine toolbox needs a free Copernicus Marine account. Either run
 
 Inside the desktop app, the top toolbar also has a `Sea Level` button. It opens a file picker for a Copernicus NetCDF file, generates a high-resolution sea-level PNG from the selected file, and updates the dashboard sea-level image panel.
 
-If Windows reports that `gdal_netCDF.dll` is missing, update the environment with `conda env update -f environment.yml`. The app reads Copernicus NetCDF files with `xarray`/`netCDF4` first, so the sea-level figure does not require the optional GDAL NetCDF plugin.
+If Windows reports that `gdal_netCDF.dll` is missing, update the environment with `conda env update -f Func/environment.yml`. The app reads Copernicus NetCDF files with `xarray`/`netCDF4` first, so the sea-level figure does not require the optional GDAL NetCDF plugin.
 
 ### Automatic sea and glacier surface temperature
 
@@ -168,7 +168,7 @@ Reference observations are never changed to improve agreement. Derived compariso
 
 ### Optional - Validate chlorophyll-a against reference points
 
-Use `validate_chlorophyll.py` to compare an app-generated `CHL_A.tif` with field or reference chlorophyll-a point measurements.
+Use `Func/validate_chlorophyll.py` to compare an app-generated `CHL_A.tif` with field or reference chlorophyll-a point measurements.
 
 Input CSV example:
 
@@ -181,7 +181,7 @@ sample_002,-16.35,64.02,2025-08-20,3.12
 Run:
 
 ```bash
-python validate_chlorophyll.py ^
+python Func/validate_chlorophyll.py ^
   --raster outputs/preprocessed/<run>/indexes/<scene>/<scene>_CHL_A.tif ^
   --observations reference_chlorophyll_samples.csv ^
   --x-column lon ^
@@ -207,9 +207,9 @@ EARTHDATA_PASSWORD=your_nasa_earthdata_password
 Then run:
 
 ```bash
-python download_hls_s30_chlorophyll.py
+python Func/download_hls_s30_chlorophyll.py
 
-python validate_chlorophyll.py ^
+python Func/validate_chlorophyll.py ^
   --raster outputs/results/indexes/CHL_A/2025/S2B_MSIL2A_20250820T124309_R095_T28WDS_20250820T162234_S2B_MSIL2A_20250820T124309_R095_T28WDS_20250820T162234_CHL_A.tif ^
   --reference-raster outputs/reference_chlorophyll/hls_s30/HLS.S30.T28WDS.2025232T124309.v2.0/HLS.S30.T28WDS.2025232T124309.v2.0_HLS_S30_CHL_A.tif ^
   --resampling average
@@ -220,7 +220,7 @@ Default HLS source: `HLS.S30.T28WDS.2025232T124309.v2.0`, DOI `10.5067/HLS/HLSS3
 To create a separately labeled HLS calibration result after validation, run:
 
 ```bash
-python calibrate_chlorophyll.py
+python Func/calibrate_chlorophyll.py
 ```
 
 The calibration script keeps HLS reference values unchanged. It fits a quadratic log-space transformation to the app CHL-A values on 80% of deterministic spatial blocks and reports metrics only on the held-out 20%. The raw validation report remains available alongside the calibration report and plot.
@@ -228,7 +228,7 @@ The calibration script keeps HLS reference values unchanged. It fits a quadratic
 The two Copernicus comparison cards can be regenerated with the same held-out-cell design:
 
 ```bash
-python calibrate_marine_validation.py
+python Func/calibrate_marine_validation.py
 ```
 
 This creates separate Copernicus CHL-A and turbidity/BBP calibration reports and plots. Calibration is applied only to app values; Copernicus reference values and the original raw validation reports remain unchanged. The turbidity result is labeled provisional because monthly BBP is an indirect proxy and the held-out sample is small.

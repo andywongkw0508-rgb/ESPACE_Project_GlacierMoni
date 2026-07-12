@@ -11,7 +11,8 @@ import numpy as np
 from validate_chlorophyll import write_hls_scatter_plot
 
 
-DEFAULT_VALIDATION_DIR = Path("outputs") / "results" / "chlorophyll_validation"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_VALIDATION_DIR = PROJECT_ROOT / "outputs" / "results" / "chlorophyll_validation"
 
 
 def main() -> None:

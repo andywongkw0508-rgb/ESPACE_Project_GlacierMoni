@@ -14,7 +14,7 @@ import requests
 from osgeo import gdal
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_APP_RASTER = (
     PROJECT_ROOT
     / "outputs"
@@ -84,7 +84,7 @@ def main() -> int:
     if args.app_raster:
         print("\nValidate against the app result with:")
         print(
-            "python validate_chlorophyll.py "
+            "python Func/validate_chlorophyll.py "
             f"--raster \"{Path(args.app_raster)}\" "
             f"--reference-raster \"{chlorophyll_file}\" "
             "--resampling average"
