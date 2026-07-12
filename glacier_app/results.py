@@ -1,22 +1,28 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
 from osgeo import gdal
 
 try:
-    from .config import BAND_PREVIEW_CACHE, PREPROCESSED_DIR
+    from .config import BAND_PREVIEW_CACHE, PREPROCESSED_DIR, RESULTS_DIR
 except ImportError:
     import sys
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from glacier_app.config import BAND_PREVIEW_CACHE, PREPROCESSED_DIR
+    from glacier_app.config import BAND_PREVIEW_CACHE, PREPROCESSED_DIR, RESULTS_DIR
 
 
 PREVIEW_MAX_WIDTH = 1000
+DASHBOARD_STATIC_PREVIEW_MAX_SIZE = 720
+BOUNDARY_PREVIEW_VERSION = 3
+BOUNDARY_MIN_LINE_RADIUS = 1
+BOUNDARY_MAX_LINE_RADIUS = 1
 CHL_PREVIEW_LOW_PERCENTILE = 2.0
 CHL_PREVIEW_HIGH_PERCENTILE = 98.0
 CHL_PREVIEW_MIN_LOG_SPAN = 0.35
@@ -25,6 +31,12 @@ CHL_LEGEND_MARGIN = 16
 CHL_LEGEND_MIN_WIDTH = 160
 CHL_LEGEND_PANEL_MIN_WIDTH = 190
 CHL_LEGEND_BAR_WIDTH = 24
+INDEX_METRIC_SAMPLE_SIZE = 512
+INDEX_METRIC_THRESHOLDS = {
+    "NDSI": 0.40,
+    "NDWI": 0.20,
+    "TURBIDITY": 0.65,
+}
 
 
 @dataclass
@@ -42,6 +54,18 @@ class ProcessingOutput:
     source_file: Path | None = None
 
 
+@dataclass(frozen=True)
+class IndexMetricSummary:
+    label: str
+    mean: float
+    median: float
+    percentile_10: float
+    percentile_90: float
+    valid_count: int
+    threshold: float | None = None
+    fraction_above_threshold: float | None = None
+
+
 def list_processing_outputs(run_dirs: list[Path]) -> list[ProcessingOutput]:
     outputs = []
     for run_dir in run_dirs:
@@ -52,6 +76,52 @@ def list_processing_outputs(run_dirs: list[Path]) -> list[ProcessingOutput]:
         outputs.extend(read_preprocessed_outputs(run_dir))
     outputs.sort(key=lambda item: (item.run_name, item.date, item.scene_id, item.kind, item.label))
     return outputs
+
+
+def index_metric_summary(output: ProcessingOutput) -> IndexMetricSummary:
+    import numpy as np
+
+    if output.kind != "Index":
+        raise ValueError(f"Index statistics require an index output, not {output.kind}.")
+    gdal.UseExceptions()
+    dataset = gdal.Open(str(output.output_file))
+    if dataset is None:
+        raise RuntimeError(f"Could not open index raster: {output.output_file}")
+    scale = min(
+        1.0,
+        INDEX_METRIC_SAMPLE_SIZE / max(1, dataset.RasterXSize, dataset.RasterYSize),
+    )
+    width = max(1, int(round(dataset.RasterXSize * scale)))
+    height = max(1, int(round(dataset.RasterYSize * scale)))
+    band = dataset.GetRasterBand(1)
+    data = band.ReadAsArray(buf_xsize=width, buf_ysize=height).astype(np.float32)
+    nodata = band.GetNoDataValue()
+    dataset = None
+
+    valid = np.isfinite(data)
+    if nodata is not None:
+        valid &= ~np.isclose(data, np.float32(nodata))
+    label = output.label.upper()
+    if label == "CHL_A":
+        valid &= data > 0
+    values = data[valid]
+    if values.size == 0:
+        raise RuntimeError(f"No valid values were found in {output.label}.")
+
+    threshold = INDEX_METRIC_THRESHOLDS.get(label)
+    fraction = None
+    if threshold is not None:
+        fraction = float(np.mean(values >= np.float32(threshold)))
+    return IndexMetricSummary(
+        label=label,
+        mean=float(np.mean(values)),
+        median=float(np.median(values)),
+        percentile_10=float(np.percentile(values, 10.0)),
+        percentile_90=float(np.percentile(values, 90.0)),
+        valid_count=int(values.size),
+        threshold=threshold,
+        fraction_above_threshold=fraction,
+    )
 
 
 def read_boundary_outputs(run_dir: Path) -> list[ProcessingOutput]:
@@ -68,6 +138,7 @@ def read_boundary_outputs(run_dir: Path) -> list[ProcessingOutput]:
             output_file = existing_output_path(row.get("output_file", ""))
             if not output_file:
                 continue
+            source_file = existing_output_path(row.get("source_file", ""))
             outputs.append(
                 ProcessingOutput(
                     run_name=run_dir.name,
@@ -76,10 +147,11 @@ def read_boundary_outputs(run_dir: Path) -> list[ProcessingOutput]:
                     scene_id=row.get("scene_id", ""),
                     date=row.get("date", ""),
                     sensor=row.get("sensor", ""),
-                    formula=f"Boundary of {row.get('source_formula', '')}".strip(),
+                    formula=f"Dominant connected exterior boundary of {row.get('source_formula', '')}".strip(),
                     output_file=output_file,
                     pixel_count=parse_int(row.get("boundary_pixels", "")),
                     area_km2=parse_float(row.get("boundary_length_km", "")),
+                    source_file=source_file,
                 )
             )
     return outputs
@@ -186,6 +258,10 @@ def processing_preview_png(output: ProcessingOutput) -> Path:
             style_tag += "_chl_auto_v1"
         elif output.label.upper() in {"TURBIDITY", "CHL_TURBIDITY_WARNING"}:
             style_tag += "_turbidity_v4"
+    elif output.kind == "Boundary":
+        style_tag += f"_continuous_v{BOUNDARY_PREVIEW_VERSION}"
+    elif output.kind == "Mask":
+        style_tag += "_classified_v2"
     preview_path = cache_dir / f"{source.stem}_{safe_name(output.kind)}_{safe_name(output.label)}_{style_tag}.png"
     if preview_path.exists() and preview_path.stat().st_mtime >= source.stat().st_mtime:
         return preview_path
@@ -197,13 +273,10 @@ def processing_preview_png(output: ProcessingOutput) -> Path:
             _render_turbidity_png(source, preview_path)
         else:
             _render_index_png(source, preview_path)
-    elif output.kind in {"Mask", "Boundary"}:
-        gdal.UseExceptions()
-        opts = gdal.TranslateOptions(options=["-ot", "Byte", "-outsize", str(PREVIEW_MAX_WIDTH), "0", "-scale", "0", "1", "0", "255"])
-        ds = gdal.Translate(str(preview_path), str(source), options=opts)
-        if ds is None or not preview_path.exists():
-            raise RuntimeError(f"Could not render {output.label} preview")
-        ds = None
+    elif output.kind == "Boundary":
+        render_boundary_preview(source, preview_path)
+    elif output.kind == "Mask":
+        render_mask_preview(source, preview_path)
     else:
         gdal.UseExceptions()
         opts = gdal.TranslateOptions(options=["-ot", "Byte", "-outsize", str(PREVIEW_MAX_WIDTH), "0", "-scale"])
@@ -214,7 +287,54 @@ def processing_preview_png(output: ProcessingOutput) -> Path:
     return preview_path
 
 
-def chlorophyll_overlay_png(chlorophyll: ProcessingOutput, base: ProcessingOutput) -> Path:
+def dashboard_static_preview_png(source: Path) -> Path:
+    if not source.exists():
+        raise FileNotFoundError(f"Dashboard image is not available: {source}")
+    gdal.UseExceptions()
+    dataset = gdal.Open(str(source))
+    if dataset is None:
+        raise RuntimeError(f"Could not open dashboard image: {source}")
+    width, height = dataset.RasterXSize, dataset.RasterYSize
+    scale = min(1.0, DASHBOARD_STATIC_PREVIEW_MAX_SIZE / max(1, width, height))
+    if scale >= 1.0:
+        dataset = None
+        return source
+
+    cache_dir = BAND_PREVIEW_CACHE / "dashboard_static"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    path_key = hashlib.sha1(str(source.resolve()).encode("utf-8")).hexdigest()[:10]
+    source_label = safe_name(source.stem)
+    if len(source_label) > 96:
+        label_key = hashlib.sha1(source_label.encode("utf-8")).hexdigest()[:8]
+        source_label = f"{source_label[:80]}_{label_key}"
+    preview_path = cache_dir / (
+        f"{source_label}_{path_key}_p{DASHBOARD_STATIC_PREVIEW_MAX_SIZE}.png"
+    )
+    if preview_path.exists() and preview_path.stat().st_mtime >= source.stat().st_mtime:
+        dataset = None
+        return preview_path
+
+    out_width = max(1, int(round(width * scale)))
+    out_height = max(1, int(round(height * scale)))
+    options = gdal.TranslateOptions(
+        format="PNG",
+        width=out_width,
+        height=out_height,
+        resampleAlg="bilinear",
+    )
+    rendered = gdal.Translate(str(preview_path), dataset, options=options)
+    dataset = None
+    if rendered is None:
+        raise RuntimeError(f"Could not create dashboard preview: {source}")
+    rendered = None
+    return preview_path
+
+
+def chlorophyll_overlay_png(
+    chlorophyll: ProcessingOutput,
+    base: ProcessingOutput,
+    publish_output: bool = False,
+) -> Path:
     if chlorophyll.kind != "Index" or chlorophyll.label.upper() != "CHL_A":
         raise ValueError("Select a CHL_A index result before building a chlorophyll overlay.")
     if not chlorophyll.output_file.exists():
@@ -236,13 +356,17 @@ def chlorophyll_overlay_png(chlorophyll: ProcessingOutput, base: ProcessingOutpu
         and overlay_path.stat().st_mtime >= newest_source
         and metadata_path.stat().st_mtime >= newest_source
     ):
-        return overlay_path
+        return publish_overlay_output(overlay_path, "chlorophyll_a", chlorophyll, base) if publish_output else overlay_path
 
     render_chlorophyll_overlay(chlorophyll.output_file, base_file, overlay_path)
-    return overlay_path
+    return publish_overlay_output(overlay_path, "chlorophyll_a", chlorophyll, base) if publish_output else overlay_path
 
 
-def turbidity_overlay_png(turbidity: ProcessingOutput, base: ProcessingOutput) -> Path:
+def turbidity_overlay_png(
+    turbidity: ProcessingOutput,
+    base: ProcessingOutput,
+    publish_output: bool = False,
+) -> Path:
     if turbidity.kind != "Index" or turbidity.label.upper() != "TURBIDITY":
         raise ValueError("Select a TURBIDITY index result before building a turbidity overlay.")
     if not turbidity.output_file.exists():
@@ -264,13 +388,17 @@ def turbidity_overlay_png(turbidity: ProcessingOutput, base: ProcessingOutput) -
         and overlay_path.stat().st_mtime >= newest_source
         and metadata_path.stat().st_mtime >= newest_source
     ):
-        return overlay_path
+        return publish_overlay_output(overlay_path, "turbidity", turbidity, base) if publish_output else overlay_path
 
     render_turbidity_overlay(turbidity.output_file, base_file, overlay_path)
-    return overlay_path
+    return publish_overlay_output(overlay_path, "turbidity", turbidity, base) if publish_output else overlay_path
 
 
-def boundary_overlay_png(boundary: ProcessingOutput, base: ProcessingOutput) -> Path:
+def boundary_overlay_png(
+    boundary: ProcessingOutput,
+    base: ProcessingOutput,
+    publish_output: bool = False,
+) -> Path:
     if boundary.kind != "Boundary":
         raise ValueError("Select a boundary result before building a boundary overlay.")
     if not boundary.output_file.exists():
@@ -281,7 +409,8 @@ def boundary_overlay_png(boundary: ProcessingOutput, base: ProcessingOutput) -> 
     cache_dir = BAND_PREVIEW_CACHE / "boundary_overlays"
     cache_dir.mkdir(parents=True, exist_ok=True)
     overlay_path = cache_dir / (
-        f"{boundary.output_file.stem}_on_{base.output_file.stem}_p{PREVIEW_MAX_WIDTH}_overlay_v1.png"
+        f"{boundary.output_file.stem}_on_{base.output_file.stem}_p{PREVIEW_MAX_WIDTH}"
+        f"_overlay_v{BOUNDARY_PREVIEW_VERSION}.png"
     )
     metadata_path = overlay_metadata_path(overlay_path)
     base_file = base.source_file or base.output_file
@@ -292,10 +421,10 @@ def boundary_overlay_png(boundary: ProcessingOutput, base: ProcessingOutput) -> 
         and overlay_path.stat().st_mtime >= newest_source
         and metadata_path.stat().st_mtime >= newest_source
     ):
-        return overlay_path
+        return publish_overlay_output(overlay_path, "boundary", boundary, base) if publish_output else overlay_path
 
     render_boundary_overlay(boundary.output_file, base_file, overlay_path)
-    return overlay_path
+    return publish_overlay_output(overlay_path, "boundary", boundary, base) if publish_output else overlay_path
 
 
 def overlay_coordinate_region(overlay_path: Path) -> tuple[int, int, int, int] | None:
@@ -317,6 +446,30 @@ def overlay_coordinate_region(overlay_path: Path) -> tuple[int, int, int, int] |
     if width <= 0 or height <= 0:
         return None
     return x, y, width, height
+
+
+def publish_overlay_output(
+    preview_path: Path,
+    overlay_kind: str,
+    source: ProcessingOutput,
+    base: ProcessingOutput,
+) -> Path:
+    output_path = overlay_output_path(overlay_kind, source, base)
+    shutil.copy2(preview_path, output_path)
+    metadata_path = overlay_metadata_path(preview_path)
+    if metadata_path.exists():
+        shutil.copy2(metadata_path, overlay_metadata_path(output_path))
+    return output_path
+
+
+def overlay_output_path(overlay_kind: str, source: ProcessingOutput, base: ProcessingOutput) -> Path:
+    year = source.date[:4] if len(source.date) >= 4 and source.date[:4].isdigit() else "unknown_year"
+    target_dir = RESULTS_DIR / "overlays" / safe_name(overlay_kind.upper()) / year / safe_name(source.scene_id)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    base_file = base.source_file or base.output_file
+    return target_dir / (
+        f"{safe_name(source.output_file.stem)}_on_{safe_name(base_file.stem)}_overlay.png"
+    )
 
 
 def _render_index_png(source: Path, preview_path: Path) -> None:
@@ -515,6 +668,50 @@ def render_turbidity_overlay(turbidity_source: Path, base_source: Path, overlay_
     write_overlay_metadata(overlay_path, out_w, out_h)
 
 
+def render_boundary_preview(boundary_source: Path, preview_path: Path) -> None:
+    import numpy as np
+
+    gdal.UseExceptions()
+    boundary_ds = gdal.Open(str(boundary_source))
+    if boundary_ds is None:
+        raise RuntimeError(f"Cannot open {boundary_source}")
+
+    out_w, out_h = boundary_preview_dimensions(boundary_ds)
+    mask = boundary_display_mask(boundary_source, boundary_ds, out_w, out_h)
+    boundary_ds = None
+    mask = thicken_mask(mask, radius=boundary_line_radius(out_w, out_h))
+
+    rgb = np.zeros((3, out_h, out_w), dtype=np.uint8)
+    rgb[:, mask] = np.uint8(255)
+    alpha = np.full((out_h, out_w), np.uint8(255), dtype=np.uint8)
+    write_rgba_png(preview_path, rgb, alpha)
+
+
+def render_mask_preview(mask_source: Path, preview_path: Path) -> None:
+    import numpy as np
+
+    gdal.UseExceptions()
+    dataset = gdal.Open(str(mask_source))
+    if dataset is None:
+        raise RuntimeError(f"Cannot open {mask_source}")
+    out_w, out_h = boundary_preview_dimensions(dataset)
+    band = dataset.GetRasterBand(1)
+    values = band.ReadAsArray(buf_xsize=out_w, buf_ysize=out_h)
+    nodata = band.GetNoDataValue()
+    dataset = None
+
+    unknown = np.zeros(values.shape, dtype=bool)
+    if nodata is not None:
+        unknown = values == nodata
+    glacier = (values > 0) & ~unknown
+
+    rgb = np.zeros((3, out_h, out_w), dtype=np.uint8)
+    rgb[:, unknown] = np.uint8(72)
+    rgb[:, glacier] = np.uint8(255)
+    alpha = np.full((out_h, out_w), np.uint8(255), dtype=np.uint8)
+    write_rgba_png(preview_path, rgb, alpha)
+
+
 def render_boundary_overlay(boundary_source: Path, base_source: Path, overlay_path: Path) -> None:
     import numpy as np
 
@@ -523,26 +720,17 @@ def render_boundary_overlay(boundary_source: Path, base_source: Path, overlay_pa
     if boundary_ds is None:
         raise RuntimeError(f"Cannot open {boundary_source}")
 
-    full_w, full_h = boundary_ds.RasterXSize, boundary_ds.RasterYSize
-    scale = min(1.0, PREVIEW_MAX_WIDTH / full_w)
-    out_w = max(1, int(round(full_w * scale)))
-    out_h = max(1, int(round(full_h * scale)))
+    out_w, out_h = boundary_preview_dimensions(boundary_ds)
     bounds = dataset_bounds(boundary_ds)
     projection = boundary_ds.GetProjection()
-
-    band = boundary_ds.GetRasterBand(1)
-    data = band.ReadAsArray(buf_xsize=out_w, buf_ysize=out_h).astype(np.float32)
-    nodata_val = band.GetNoDataValue()
+    mask = boundary_display_mask(boundary_source, boundary_ds, out_w, out_h)
     boundary_ds = None
-
-    mask = np.isfinite(data) & (data > 0)
-    if nodata_val is not None:
-        mask &= ~np.isclose(data, np.float32(nodata_val))
-    mask = thicken_mask(mask, radius=1)
+    line_radius = boundary_line_radius(out_w, out_h)
+    mask = thicken_mask(mask, radius=line_radius)
 
     rgb, base_valid = base_rgb_for_grid(base_source, projection, bounds, out_w, out_h)
     if mask.any():
-        halo = thicken_mask(mask, radius=2)
+        halo = thicken_mask(mask, radius=1)
         rgb[0][halo] = 20
         rgb[1][halo] = 29
         rgb[2][halo] = 33
@@ -552,6 +740,64 @@ def render_boundary_overlay(boundary_source: Path, base_source: Path, overlay_pa
     alpha = np.where(base_valid | mask, np.uint8(255), np.uint8(0))
     write_rgba_png(overlay_path, rgb, alpha)
     write_overlay_metadata(overlay_path, out_w, out_h)
+
+
+def boundary_preview_dimensions(dataset: gdal.Dataset) -> tuple[int, int]:
+    full_w, full_h = dataset.RasterXSize, dataset.RasterYSize
+    scale = min(1.0, PREVIEW_MAX_WIDTH / max(1, full_w, full_h))
+    return max(1, int(round(full_w * scale))), max(1, int(round(full_h * scale)))
+
+
+def boundary_line_radius(width: int, height: int) -> int:
+    scaled = int(round(max(width, height) / 500.0))
+    return max(BOUNDARY_MIN_LINE_RADIUS, min(BOUNDARY_MAX_LINE_RADIUS, scaled))
+
+
+def boundary_display_mask(
+    boundary_source: Path,
+    boundary_ds: gdal.Dataset,
+    width: int,
+    height: int,
+):
+    """Preserve thin linework while reducing a full-resolution boundary raster."""
+    import numpy as np
+
+    bounds = dataset_bounds(boundary_ds)
+    max_resampling = getattr(gdal, "GRA_Max", gdal.GRA_NearestNeighbour)
+    reduced = gdal.Warp(
+        "",
+        boundary_ds,
+        format="MEM",
+        width=width,
+        height=height,
+        outputBounds=bounds,
+        dstSRS=boundary_ds.GetProjection(),
+        srcNodata=0,
+        dstNodata=0,
+        resampleAlg=max_resampling,
+    )
+    if reduced is None:
+        raise RuntimeError(f"Could not reduce boundary raster: {boundary_source}")
+
+    vector_path = boundary_source.with_suffix(".geojson")
+    if vector_path.exists():
+        vector = gdal.OpenEx(str(vector_path), gdal.OF_VECTOR)
+        if vector is not None:
+            layer = vector.GetLayer(0)
+            error = gdal.RasterizeLayer(
+                reduced,
+                [1],
+                layer,
+                burn_values=[1],
+                options=["ALL_TOUCHED=TRUE"],
+            )
+            vector = None
+            if error != 0:
+                raise RuntimeError(f"Could not rasterize boundary vector: {vector_path}")
+
+    mask = reduced.GetRasterBand(1).ReadAsArray() > 0
+    reduced = None
+    return np.asarray(mask, dtype=bool)
 
 
 def base_rgb_for_grid(
@@ -1021,9 +1267,12 @@ TEXT_FONT = {
     "G": ("01111", "10000", "10000", "10111", "10001", "10001", "01111"),
     "H": ("10001", "10001", "10001", "11111", "10001", "10001", "10001"),
     "I": ("111", "010", "010", "010", "010", "010", "111"),
+    "K": ("10001", "10010", "10100", "11000", "10100", "10010", "10001"),
     "L": ("10000", "10000", "10000", "10000", "10000", "10000", "11111"),
     "M": ("10001", "11011", "10101", "10101", "10001", "10001", "10001"),
+    "N": ("10001", "11001", "10101", "10011", "10001", "10001", "10001"),
     "O": ("01110", "10001", "10001", "10001", "10001", "10001", "01110"),
+    "P": ("11110", "10001", "10001", "11110", "10000", "10000", "10000"),
     "R": ("11110", "10001", "10001", "11110", "10100", "10010", "10001"),
     "S": ("01111", "10000", "10000", "01110", "00001", "00001", "11110"),
     "T": ("11111", "00100", "00100", "00100", "00100", "00100", "00100"),

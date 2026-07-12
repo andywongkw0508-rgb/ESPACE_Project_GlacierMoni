@@ -7,7 +7,13 @@ from .constants import _UI_FONT
 
 
 class ProgressMixin:
-    def _open_progress_dialog(self, title: str, message: str = "Working…") -> None:
+    def _open_progress_dialog(
+        self,
+        title: str,
+        message: str = "Working…",
+        *,
+        modal: bool = True,
+    ) -> None:
         if self._progress_dialog:
             self._close_progress_dialog()
         dlg = tk.Toplevel(self)
@@ -28,6 +34,7 @@ class ProgressMixin:
 
         dlg._msg_var = msg_var  # type: ignore[attr-defined]
         dlg._bar = bar          # type: ignore[attr-defined]
+        dlg._is_modal = modal   # type: ignore[attr-defined]
 
         self.update_idletasks()
         px, py = self.winfo_x(), self.winfo_y()
@@ -37,7 +44,8 @@ class ProgressMixin:
         dh = dlg.winfo_reqheight()
         dlg.geometry(f"+{px + (pw - dw) // 2}+{py + (ph - dh) // 2}")
 
-        dlg.grab_set()
+        if modal:
+            dlg.grab_set()
         self._progress_dialog = dlg
 
     def _update_progress_dialog(self, message: str) -> None:
@@ -55,8 +63,15 @@ class ProgressMixin:
         if dlg is None:
             return
         try:
-            dlg._bar.stop()         # type: ignore[attr-defined]
-            dlg.grab_release()
+            dlg._bar.stop()  # type: ignore[attr-defined]
+        except tk.TclError:
+            pass
+        try:
+            if getattr(dlg, "_is_modal", False) and dlg.grab_current() is dlg:
+                dlg.grab_release()
+        except tk.TclError:
+            pass
+        try:
             dlg.destroy()
         except tk.TclError:
             pass

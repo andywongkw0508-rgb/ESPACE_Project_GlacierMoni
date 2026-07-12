@@ -23,6 +23,11 @@ ProgressCallback = Callable[[str], None]
 
 INDEX_NODATA = -9999.0
 CHL_WATER_NDWI_THRESHOLD = 0.0
+CHL_A_METHOD = "oc4v4_blue_green_chlorophyll_a"
+# SeaWiFS OC4v4 coefficients cited from O'Reilly et al. (1998), doi:10.1029/98JC02160.
+# Full OC4 uses the maximum of several blue bands over green; this app applies the cited
+# polynomial to the available blue/green pair, so the product remains a CHL-A proxy.
+CHL_A_OC4V4_COEFFICIENTS = (0.366, -3.067, 1.930, 0.649, -1.532)
 TURBIDITY_WATER_NDWI_THRESHOLD = 0.05
 TURBIDITY_SNOW_NDSI_THRESHOLD = 0.40
 TURBIDITY_LOW_PERCENTILE = 5.0
@@ -91,8 +96,8 @@ INDEX_SPECS = [
         "CHL_A",
         "blue",
         "green",
-        "OC2 chlorophyll-a proxy from blue/green ratio; SCL/QA water mask preferred",
-        "oc2_chlorophyll_a",
+        "SeaWiFS OC4v4 coefficients applied to blue/green ratio; SCL/QA water mask preferred",
+        CHL_A_METHOD,
     ),
     IndexSpec(
         "CHL_TURBIDITY_WARNING",
@@ -166,7 +171,7 @@ def calculate_run_indexes(
                 water_mask_kind = ""
                 aux_mask_band = None
                 aux_mask_kind = ""
-                if spec.method == "oc2_chlorophyll_a":
+                if spec.method == CHL_A_METHOD:
                     water_mask_band = scene.bands.get("quality") or scene.bands.get("nir")
                     water_mask_kind = "quality" if scene.bands.get("quality") else "ndwi"
                 elif spec.method in {"glacial_turbidity", "chl_turbidity_warning"}:
@@ -177,7 +182,7 @@ def calculate_run_indexes(
                         aux_mask_kind = "swir"
                 output = scene_dir / f"{safe_name(scene.scene_id)}_{spec.name}.tif"
                 missing = missing_roles(scene, spec)
-                if spec.method in {"oc2_chlorophyll_a", "glacial_turbidity", "chl_turbidity_warning"} and water_mask_band is None:
+                if spec.method in {CHL_A_METHOD, "glacial_turbidity", "chl_turbidity_warning"} and water_mask_band is None:
                     missing = append_missing(missing, "NIR or SCL/QA water mask")
                 if missing:
                     writer.writerow(index_row(scene, spec, first, second, output, "missing", missing))
@@ -299,7 +304,7 @@ def compute_index_raster(
         invalid |= np.isclose(a, np.float32(nodata_a))
     if nodata_b is not None:
         invalid |= np.isclose(b, np.float32(nodata_b))
-    if method in {"oc2_chlorophyll_a", "glacial_turbidity", "chl_turbidity_warning"}:
+    if method in {CHL_A_METHOD, "glacial_turbidity", "chl_turbidity_warning"}:
         water_mask = None
         if mask_file is not None:
             if mask_kind == "quality":
@@ -315,8 +320,8 @@ def compute_index_raster(
                 else:
                     water_mask = ndwi_water_mask(b, nir, CHL_WATER_NDWI_THRESHOLD)
             invalid |= mask_invalid
-        if method == "oc2_chlorophyll_a":
-            result = compute_oc2_chlorophyll_a(a, b, invalid, water_mask)
+        if method == CHL_A_METHOD:
+            result = compute_chlorophyll_a(a, b, invalid, water_mask)
         elif method == "glacial_turbidity":
             result = compute_glacial_turbidity(a, b, invalid, water_mask)
         else:
@@ -413,7 +418,7 @@ def spectral_turbidity_water_mask(
     return water & ~snow_or_ice
 
 
-def compute_oc2_chlorophyll_a(
+def compute_chlorophyll_a(
     blue: np.ndarray,
     green: np.ndarray,
     invalid: np.ndarray,
@@ -427,12 +432,13 @@ def compute_oc2_chlorophyll_a(
 
     ratio = np.clip(safe_blue / safe_green, np.float32(0.01), np.float32(100.0))
     r = np.log10(ratio)
+    a0, a1, a2, a3, a4 = (np.float32(value) for value in CHL_A_OC4V4_COEFFICIENTS)
     log_chla = (
-        np.float32(0.1977)
-        - np.float32(1.8117) * r
-        + np.float32(1.9743) * r**2
-        - np.float32(2.5635) * r**3
-        - np.float32(0.7218) * r**4
+        a0
+        + a1 * r
+        + a2 * r**2
+        + a3 * r**3
+        + a4 * r**4
     )
     chlorophyll = np.power(np.float32(10.0), log_chla)
     chlorophyll = np.clip(chlorophyll, np.float32(0.0), np.float32(1000.0))

@@ -38,10 +38,13 @@ def compute(
         candidate &= ~water_excluded
 
     if quality_path:
-        cloud_excluded = quality_mask(quality_path, source, sensor)
-        candidate &= ~cloud_excluded
+        cloud_excluded, quality_water = quality_masks(quality_path, source, sensor)
+        water_excluded |= quality_water
+        candidate &= ~(cloud_excluded | quality_water)
 
-    mask_arr = candidate.astype(np.uint8)
+    mask_arr = np.zeros(candidate.shape, dtype=np.uint8)
+    mask_arr[candidate] = 1
+    mask_arr[~valid | cloud_excluded] = 255
 
     driver = gdal.GetDriverByName("GTiff")
     target = driver.Create(
@@ -57,13 +60,15 @@ def compute(
 
     target.SetGeoTransform(source.GetGeoTransform())
     target.SetProjection(source.GetProjection())
-    target.GetRasterBand(1).WriteArray(mask_arr)
+    out_band = target.GetRasterBand(1)
+    out_band.SetNoDataValue(255)
+    out_band.WriteArray(mask_arr)
     target.FlushCache()
 
     geotransform = source.GetGeoTransform()
     pixel_area_m2 = abs(geotransform[1] * geotransform[5] - geotransform[2] * geotransform[4])
-    mask_pixels = int(mask_arr.sum())
-    valid_pixels = int(valid.sum())
+    mask_pixels = int(candidate.sum())
+    valid_pixels = int((valid & ~cloud_excluded).sum())
     water_excluded_pixels = int((water_excluded & valid).sum())
     cloud_excluded_pixels = int((cloud_excluded & valid).sum())
 
@@ -90,26 +95,60 @@ def water_mask(path: str, reference: gdal.Dataset, threshold: float) -> np.ndarr
     return valid & (array >= threshold)
 
 
-def quality_mask(path: str, reference: gdal.Dataset, sensor: str) -> np.ndarray:
+def quality_masks(
+    path: str,
+    reference: gdal.Dataset,
+    sensor: str,
+) -> tuple[np.ndarray, np.ndarray]:
     ds = aligned_dataset(path, reference)
     array = ds.GetRasterBand(1).ReadAsArray()
     if sensor == "sentinel-2-l2a":
         values = array.astype(np.uint8)
-        # Remove no-data, defective, dark/shadow, cloud shadow, water,
-        # medium/high cloud probability, and cirrus. Snow/ice is kept.
-        invalid_classes = {0, 1, 2, 3, 6, 8, 9, 10}
-        mask = np.zeros(values.shape, dtype=bool)
-        for value in invalid_classes:
-            mask |= values == value
-        return mask
+        # Keep snow/ice (11). Unknown/cloud pixels become NoData, while water
+        # remains a known non-glacier class so terminus edges can be measured.
+        cloud_classes = {0, 1, 2, 3, 7, 8, 9, 10}
+        cloud = values_in(values, cloud_classes)
+        water = values == 6
+        return dilate_mask(cloud, radius=2), dilate_mask(water, radius=1)
     if sensor == "landsat-c2-l2":
         values = array.astype(np.uint16)
         invalid_bits = [0, 1, 2, 3, 4]
-        mask = np.zeros(values.shape, dtype=bool)
+        cloud = np.zeros(values.shape, dtype=bool)
         for bit in invalid_bits:
-            mask |= (values & (1 << bit)) != 0
+            cloud |= (values & (1 << bit)) != 0
+        water = (values & (1 << 7)) != 0
+        return dilate_mask(cloud, radius=1), dilate_mask(water, radius=1)
+    empty = np.zeros(array.shape, dtype=bool)
+    return empty, empty.copy()
+
+
+def values_in(values: np.ndarray, classes: set[int]) -> np.ndarray:
+    result = np.zeros(values.shape, dtype=bool)
+    for value in classes:
+        result |= values == value
+    return result
+
+
+def dilate_mask(mask: np.ndarray, radius: int) -> np.ndarray:
+    if radius <= 0 or not mask.any():
         return mask
-    return np.zeros(array.shape, dtype=bool)
+    result = mask.copy()
+    for dy in range(-radius, radius + 1):
+        for dx in range(-radius, radius + 1):
+            if dx == 0 and dy == 0:
+                continue
+            shifted = np.zeros_like(mask)
+            src_y0 = max(0, -dy)
+            src_y1 = mask.shape[0] - max(0, dy)
+            src_x0 = max(0, -dx)
+            src_x1 = mask.shape[1] - max(0, dx)
+            dst_y0 = max(0, dy)
+            dst_y1 = mask.shape[0] - max(0, -dy)
+            dst_x0 = max(0, dx)
+            dst_x1 = mask.shape[1] - max(0, -dx)
+            shifted[dst_y0:dst_y1, dst_x0:dst_x1] = mask[src_y0:src_y1, src_x0:src_x1]
+            result |= shifted
+    return result
 
 
 def aligned_dataset(path: str, reference: gdal.Dataset) -> gdal.Dataset:

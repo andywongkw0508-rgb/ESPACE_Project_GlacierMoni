@@ -31,8 +31,8 @@ class MaskBoundaryMixin:
 
     def extract_selected_boundary(self) -> None:
         output = self.selected_processing_output()
-        if output is None or output.kind != "Mask":
-            self.status_var.set("Select a mask result before extracting a boundary.")
+        if output is None or output.kind != "Mask" or "NDSI" not in output.label.upper():
+            self.status_var.set("Select an NDSI mask before extracting a glacier boundary.")
             return
         self.boundary_button.configure(state="disabled")
         self.status_var.set(f"Extracting refined boundary from {output.label}.")
@@ -63,9 +63,12 @@ class MaskBoundaryMixin:
         worker.start()
 
     def extract_all_boundaries(self) -> None:
-        mask_outputs = [o for o in self.current_processing_outputs if o.kind == "Mask"]
+        mask_outputs = [
+            o for o in self.current_processing_outputs
+            if o.kind == "Mask" and "NDSI" in o.label.upper()
+        ]
         if not mask_outputs:
-            self.status_var.set("No mask results loaded. Build masks first.")
+            self.status_var.set("No NDSI mask results loaded. Build NDSI masks first.")
             return
         self.batch_boundary_button.configure(state="disabled")
         self.boundary_button.configure(state="disabled")
@@ -160,7 +163,10 @@ class MaskBoundaryMixin:
 
     def build_boundary_overlay(self) -> None:
         base = best_2026_base(self.current_processing_outputs) or best_2026_base_from_rows(self.rows)
-        boundaries = [output for output in self.current_processing_outputs if output.kind == "Boundary"]
+        boundaries = [
+            output for output in self.current_processing_outputs
+            if output.kind == "Boundary" and "NDSI" in output.label.upper()
+        ]
         if base is None:
             self.status_var.set(f"No target visual raster is available for overlay: {OVERLAY_BASE_SCENE_ID}")
             return
@@ -240,6 +246,9 @@ class MaskBoundaryMixin:
             f"Boundary pixels: {result.boundary_pixels:,}\n"
             f"Boundary length: {result.boundary_length_km:.3f} km\n"
             f"Polygons: {result.polygon_count:,}\n\n"
+            f"Detected regions: {result.source_region_count:,}\n"
+            f"Detached regions removed: {result.removed_region_count:,}\n"
+            f"Dominant area share: {result.largest_region_share:.1%}\n\n"
             f"Boundary raster:\n{result.output.output_file}\n\n"
             f"Boundary GeoJSON:\n{result.boundary_file}\n\n"
             f"Polygon GeoJSON:\n{result.polygon_file}\n\n"

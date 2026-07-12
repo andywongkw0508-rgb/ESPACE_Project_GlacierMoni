@@ -5,5 +5,11 @@ dependencies:
   - python=3.11
   - gdal
   - numpy
+  - matplotlib
+  - xarray
+  - netcdf4
+  - cftime
   - tk
   - pip
+  - pip:
+      - copernicusmarine
