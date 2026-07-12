@@ -2,7 +2,7 @@
 
 Usage
 -----
-    python generate_manifest.py [DATA_ROOT]
+    python Func/generate_manifest.py [DATA_ROOT]
 
 DATA_ROOT is the directory that contains the ``sentinel/`` subfolder.
 If omitted the script reads GLACIER_DATA_ROOT from the environment (or
@@ -24,7 +24,7 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 def _load_env() -> None:
-    env_file = Path(__file__).parent / ".env"
+    env_file = Path(__file__).resolve().parents[1] / ".env"
     if not env_file.exists():
         return
     with env_file.open(encoding="utf-8") as fh:
@@ -54,7 +54,7 @@ def _resolve_data_root() -> Path:
         return Path(env_val).resolve()
     sys.exit(
         "Error: DATA_ROOT not set.\n"
-        "Either pass it as an argument:  python generate_manifest.py /path/to/data\n"
+        "Either pass it as an argument:  python Func/generate_manifest.py /path/to/data\n"
         "or set GLACIER_DATA_ROOT in your .env file or shell environment."
     )
 

@@ -13,7 +13,8 @@ from calibrate_chlorophyll import metric_block, solve_linear_system
 from validate_chlorophyll import _draw_vertical_plot_label, _plot_count, _plot_font, _plot_metric
 
 
-RESULTS_DIR = Path("outputs") / "results"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+RESULTS_DIR = PROJECT_ROOT / "outputs" / "results"
 FOLDS = 5
 HOLDOUT_FOLD = 0
 BLOCK_SIZE_PIXELS = 1

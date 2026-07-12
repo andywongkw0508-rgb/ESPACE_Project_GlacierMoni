@@ -82,7 +82,7 @@ def download_copernicus_sea_level(output_file: Path, progress: ProgressCallback 
     if not copernicusmarine_available():
         raise RuntimeError(
             "Copernicus Marine toolbox is not installed. Run "
-            "`conda env update -f environment.yml` and activate the glacier-monitoring environment."
+            "`conda env update -f Func/environment.yml` and activate the glacier-monitoring environment."
         )
     if progress is not None and not copernicus_credentials_configured():
         progress("No .env Copernicus credentials found; trying saved Copernicus Marine login.")
@@ -190,7 +190,7 @@ def read_sea_level_series(data_file: Path) -> list[SeaLevelRecord]:
         raise RuntimeError(
             "Could not read the Copernicus NetCDF file. Install/update the project "
             "environment so xarray and netCDF4 are available:\n"
-            "  conda env update -f environment.yml\n\n"
+            "  conda env update -f Func/environment.yml\n\n"
             f"xarray reader error: {xarray_error}\n"
             f"GDAL reader error: {gdal_error}"
         ) from gdal_error

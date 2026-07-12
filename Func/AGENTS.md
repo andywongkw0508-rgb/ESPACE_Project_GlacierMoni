@@ -5,7 +5,7 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 ## Environment Setup
 
 ```bash
-conda env create -f environment.yml
+conda env create -f Func/environment.yml
 conda activate glacier-monitoring
 python app.py
 ```

@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_AOI = PROJECT_ROOT / "config" / "aoi.json"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "outputs" / "sea_level"
 DEFAULT_DATASET_ID = "cmems_mod_glo_phy_my_0.083deg_P1D-m"
@@ -47,7 +47,7 @@ def main() -> int:
         print(
             "\nCopernicus Marine toolbox is not installed in this Python environment.\n"
             "Install/update the project environment first:\n"
-            "  conda env update -f environment.yml\n"
+            "  conda env update -f Func/environment.yml\n"
             "  conda activate glacier-monitoring\n",
             file=sys.stderr,
         )
