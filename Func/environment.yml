@@ -9,6 +9,8 @@ dependencies:
   - xarray
   - netcdf4
   - cftime
+  - pillow
+  - requests
   - tk
   - pip
   - pip:
